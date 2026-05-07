@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated plot output — output/ is tracked so example images appear on GitHub
+# Exclude scratch outputs that aren't part of the examples catalog
+*.png
+*.svg
+!output/*.png
+!output/*.svg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Virtual envs
+.venv/
+venv/
+env/

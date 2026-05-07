@@ -1,0 +1,90 @@
+title: Compressor Speed Control — EC1
+time_end: 62
+
+groups:
+  - ylabel: "Speed [RPM]"
+    mode: analog
+    signals:
+      - name: Set Speed
+        type: stepped
+        color: "#2ecc71"
+        breakpoints: [[0,1000],[10,2500],[16,8500],[22,1000]]
+      - name: Running Speed
+        type: lagged
+        color: "#e74c3c"
+        source: Set Speed
+        tau: 1.8
+    thresholds:
+      - value: 1500
+        label: MIN 1500
+        color: "#3498db"
+      - value: 8000
+        label: MAX 8000
+        color: "#e74c3c"
+    annotations:
+      - type: tolerance
+        signal: Set Speed
+        tolerance: 400
+      - type: callout
+        signal: Running Speed
+        t: 26
+        label: Decreasing speed
+        offset: [-4, 400]
+
+      # Transient analysis — ACTIVE / RAMP: referenced by phase name.
+      # after_t overrides the phase t0 to isolate the final step (→8500 at t=16).
+      - type: transient_analysis
+        reference: Set Speed
+        feedback: Running Speed
+        tolerance_pct: 5.0
+        phase: ACTIVE / RAMP
+        after_t: 16.0
+        show_crosshairs: true
+
+      # Transient analysis — ACTIVE / STEADY: explicit time window (step-down to 1000 RPM).
+      - type: transient_analysis
+        reference: Set Speed
+        feedback: Running Speed
+        tolerance_pct: 5.0
+        after_t: 22.0
+        before_t: 47.0
+        show_crosshairs: true
+        settling_color: "#1abc9c"
+        overshoot_color: "#e67e22"
+        rise_time_color: "#2980b9"
+
+  - ylabel: "Control flags"
+    mode: digital
+    signals:
+      - name: AC_Enable
+        breakpoints: [[0,1],[2,0],[5,1],[9,0]]
+      - name: IsActVld
+        breakpoints: [[0,0],[12,1],[21,0]]
+        color: "#8e44ad"
+
+annotations:
+  - type: vspan
+    t0: 10
+    t1: 12
+    label: STARTUP window
+    color: "#f39c12"
+  - type: vline
+    t: 21
+    label: Fault detected
+    color: "#c0392b"
+  - type: phase
+    t0: 0
+    t1: 10
+    label: IDLE
+  - type: phase
+    t0: 10
+    t1: 22
+    label: ACTIVE / RAMP
+  - type: phase
+    t0: 22
+    t1: 47
+    label: ACTIVE / STEADY
+  - type: phase
+    t0: 47
+    t1: 62
+    label: SHUTDOWN

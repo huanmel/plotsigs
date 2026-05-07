@@ -1,0 +1,29 @@
+# quickplot_config.yaml — simple quickplot format for plot_signals_from_yaml()
+#
+# Use with:
+#   from plotsigs import plot_signals_from_yaml
+#   plot_signals_from_yaml(df, "examples/quickplot_config.yaml")
+
+title: "Compressor — YAML quickplot"
+figsize: [14, 9]
+
+groups:
+  - signals: ["AC_Set_Speed", "Compressor_Running_Speed"]
+    ylabel: "Speed [RPM]"
+    ref_lines:
+      - value: 800
+        label: "MIN"
+        color: "#3498db"
+      - value: 8000
+        label: "MAX"
+        color: "#e74c3c"
+
+  - signals: ["AC_Enable", "DrvrOut_IsRunOk", "DrvrOut_IsFault", "IsActVld"]
+    ylabel: "Control flags"
+    mode: digital
+
+  - signals: ["Board_Temp"]
+    ylabel: "Board temp [°C]"
+
+  - signals: ["DC_Bus_Voltage"]
+    ylabel: "DC bus [V]"

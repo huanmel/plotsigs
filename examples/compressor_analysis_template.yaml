@@ -1,0 +1,59 @@
+# compressor_analysis_template.yaml
+#
+# Shared analysis template for compressor startup logs.
+# Stable across runs: signal names, colors, analysis config, layout.
+# Variable per run (supplied via load_yaml data= / overrides=):
+#   - data          → pre-loaded DataFrame (CSV, Parquet, SQL, …)
+#   - title         → run identifier
+#   - annotations   → phase time boundaries (must include "STARTUP")
+
+figsize: [14, 10]
+xlabel: "Time [s]"
+
+csv:
+  time_col: timestamps    # expected time column; no file: — data supplied at call time
+
+groups:
+  - ylabel: "Speed [RPM]"
+    signals:
+      - name: AC_Set_Speed
+        type: measured
+        color: "#2ecc71"
+      - name: EC1_Compressor_Running_Speed
+        type: measured
+        color: "#e74c3c"
+    thresholds:
+      - value: 8500
+        label: MAX 8500
+        color: "#c0392b"
+    annotations:
+      - type: transient_analysis
+        reference: AC_Set_Speed
+        feedback: EC1_Compressor_Running_Speed
+        tolerance_pct: 5.0
+        phase: STARTUP          # resolved against the phases injected per-run
+        show_crosshairs: true
+
+  - ylabel: "Tracking error [RPM]"
+    signals:
+      - name: Error
+        type: derived
+        a: AC_Set_Speed
+        b: EC1_Compressor_Running_Speed
+        color: "#8e44ad"
+    thresholds:
+      - value: 0
+        label: zero
+        ls: "-"
+        lw: 0.6
+        color: "#aaaaaa"
+
+  - ylabel: "Digital flags"
+    mode: digital
+    signals:
+      - name: AC_Enable_Disable_Compressor
+        type: measured_digital
+        color: "#2980b9"
+      - name: AcDrvrIsRunOk
+        type: measured_digital
+        color: "#27ae60"

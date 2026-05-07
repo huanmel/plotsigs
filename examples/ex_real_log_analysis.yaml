@@ -1,0 +1,79 @@
+title: "Compressor real log — transient analysis"
+xlabel: "Time [s]"
+figsize: [14, 10]
+# time_end is omitted — auto-derived from the CSV time column
+
+csv:
+  file: compressor_real_data_log_1.csv
+  time_col: timestamps
+
+groups:
+  - ylabel: "Speed [RPM]"
+    signals:
+      - name: AC_Set_Speed
+        type: measured
+        color: "#2ecc71"
+      - name: EC1_Compressor_Running_Speed
+        type: measured
+        color: "#e74c3c"
+    thresholds:
+      - value: 8500
+        label: MAX 8500
+        color: "#c0392b"
+    annotations:
+      - type: transient_analysis
+        reference: AC_Set_Speed
+        feedback: EC1_Compressor_Running_Speed
+        tolerance_pct: 5.0
+        phase: STARTUP
+        show_crosshairs: true
+
+  - ylabel: "Tracking error [RPM]"
+    signals:
+      - name: Error
+        type: derived
+        a: AC_Set_Speed
+        b: EC1_Compressor_Running_Speed
+        color: "#8e44ad"
+    thresholds:
+      - value: 0
+        label: zero
+        ls: "-"
+        lw: 0.6
+        color: "#aaaaaa"
+
+  - ylabel: "Digital flags"
+    mode: digital
+    signals:
+      - name: AC_Enable_Disable_Compressor
+        type: measured_digital
+        color: "#2980b9"
+      - name: AcDrvrIsRunOk
+        type: measured_digital
+        color: "#27ae60"
+
+annotations:
+  - type: phase
+    t0: 0
+    t1: 14
+    label: IDLE
+  - type: phase
+    t0: 14
+    t1: 19
+    label: STARTUP
+  - type: phase
+    t0: 19
+    t1: 38.2
+    label: RAMP UP
+  - type: phase
+    t0: 38.2
+    t1: 43
+    label: MAX SPEED
+  - type: phase
+    t0: 43
+    t1: 54.4
+    label: RAMP DOWN
+  - type: phase
+    t0: 54.4
+    t1: 70
+    label: STEADY
