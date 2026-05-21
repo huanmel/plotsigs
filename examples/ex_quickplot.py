@@ -34,7 +34,7 @@ plot_signals(
     title="Compressor — auto-detected groups",
     figsize=(14, 9),
     output="output/quickplot_auto.png",
-    show=False,
+    show=True,
 )
 
 # ── Style 2: mixed shorthand (single string = one signal per subplot) ──────────
@@ -49,7 +49,7 @@ plot_signals(
     title="Compressor — single-signal subplots",
     figsize=(14, 9),
     output="output/quickplot_single.png",
-    show=False,
+    show=True,
 )
 
 # ── Style 3: dict spec — explicit labels and mode overrides ───────────────────

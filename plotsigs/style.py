@@ -30,6 +30,8 @@ FONT_SIZE_LABEL    = 9
 FONT_SIZE_TICK     = 8
 FONT_SIZE_ANNOT    = 7.5
 FONT_SIZE_PHASE    = 7
+FONT_SIZE_CAPTION  = 11
+CAPTION_COLOR      = "#222222"
 
 # Digital panel
 DIGITAL_LANE_HEIGHT = 1.4    # vertical spacing between digital signal lanes

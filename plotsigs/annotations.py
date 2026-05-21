@@ -91,6 +91,7 @@ class PhaseLabel:
         PhaseLabel(t0=0,  t1=10, label="IDLE")
         PhaseLabel(t0=10, t1=22, label="RAMP UP",  show_vline=True)
         PhaseLabel(t0=22, t1=47, label="STEADY",   vline_label=False)
+        PhaseLabel(t0=22, t1=47, label="HEAT",     status="fail")
     """
     t0: float
     t1: float
@@ -98,6 +99,7 @@ class PhaseLabel:
     color: str = "#555555"
     show_vline:  bool = True    # draw a dashed vertical line at t0 across all subplots
     vline_label: bool = True    # show the phase name rotated on the vertical line
+    status: Optional[str] = None  # "pass" → green  |  "fail" → red + × marker  |  None → color
 
 
 # ── Percentage tolerance band ─────────────────────────────────────────────────
@@ -138,6 +140,7 @@ class ComparisonConfig:
     reference: str              # signal name of the setpoint / reference
     feedback: str               # signal name of the feedback / response
     tolerance_pct: float = 5.0
+    tolerance_abs: Optional[float] = None   # absolute half-width; overrides tolerance_pct when set
     show_settling:    bool = True
     show_overshoot:   bool = True
     show_rise_time:   bool = True

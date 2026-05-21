@@ -19,11 +19,12 @@ Load from YAML:
 __version__ = "0.1.0"
 
 from plotsigs.diagram import Diagram
-from plotsigs.signals import Signal, SteppedSignal, LaggedSignal, RawSignal, DigitalSignal, DerivedSignal
+from plotsigs.signals import Signal, SteppedSignal, LaggedSignal, RawSignal, DigitalSignal, DerivedSignal, EnumeratedSignal, to_digital_bps
 from plotsigs.annotations import Threshold, ToleranceBand, PctToleranceBand, VLine, VSpan, PhaseLabel, Callout
 from plotsigs.loader import load_yaml
 from plotsigs.quickplot import plot_signals, plot_signals_from_yaml
-from plotsigs import analysis
+from plotsigs.export import export_drawio, export_excalidraw
+from plotsigs import analysis, sim
 
 __all__ = [
     "Diagram",
@@ -41,7 +42,12 @@ __all__ = [
     "load_yaml",
     "plot_signals",
     "plot_signals_from_yaml",
+    "export_drawio",
+    "export_excalidraw",
     "DerivedSignal",
+    "EnumeratedSignal",
+    "to_digital_bps",
     "PctToleranceBand",
     "analysis",
+    "sim",
 ]

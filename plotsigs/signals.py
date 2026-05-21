@@ -13,16 +13,37 @@ from typing import List, Tuple, Optional
 Breakpoints = List[Tuple[float, float]]   # [(t0, v0), (t1, v1), ...]
 
 
+def to_digital_bps(t_arr: np.ndarray, v_arr: np.ndarray) -> Breakpoints:
+    """Convert dense (t, v) arrays to transition-only breakpoints.
+
+    Useful for creating DigitalSignal or EnumeratedSignal inputs from a
+    boolean/integer numpy array without manually locating edge indices.
+
+    Example:
+        flag = (T_MR > threshold).astype(float)
+        bps = to_digital_bps(t, flag)
+        g.add_digital("FLAG", bps, color="red")
+    """
+    t_arr = np.asarray(t_arr, dtype=float)
+    v_arr = np.asarray(v_arr, dtype=float)
+    bps: Breakpoints = [(float(t_arr[0]), float(v_arr[0]))]
+    for i in range(1, len(v_arr)):
+        if v_arr[i] != v_arr[i - 1]:
+            bps.append((float(t_arr[i]), float(v_arr[i])))
+    return bps
+
+
 # ── Base ──────────────────────────────────────────────────────────────────────
 
 class Signal:
     """Abstract base. Subclasses must implement evaluate(t)."""
 
     def __init__(self, name: str, color: str = "#333333", lw: float = 1.8,
-                 label: Optional[str] = None):
+                 label: Optional[str] = None, ls: str = "-"):
         self.name = name
         self.color = color
         self.lw = lw
+        self.ls = ls
         self.label = label or name
 
     def evaluate(self, t: np.ndarray) -> np.ndarray:
@@ -145,6 +166,42 @@ class DerivedSignal(Signal):
 
     def evaluate(self, t: np.ndarray) -> np.ndarray:
         return self._op(self.a.evaluate(t), self.b.evaluate(t))
+
+
+# ── Enumerated signals ────────────────────────────────────────────────────────
+
+class EnumeratedSignal(Signal):
+    """
+    Stepped signal with named integer levels — state machines, mode selectors.
+
+    Pass a dense (t, v) array; the constructor auto-computes breakpoints so
+    evaluation is O(levels) not O(N).  The renderer uses ``labels`` to set
+    y-axis tick labels and ``colors`` to shade each level's band.
+
+    Example:
+        mode_enum = 1 * heating + 2 * circulation + 3 * cooling
+        EnumeratedSignal(
+            "Mode", t, mode_enum,
+            labels={1: "Heating", 2: "Circulation", 3: "Cooling"},
+            colors={1: "#e74c3c", 2: "#9b59b6", 3: "#3498db"},
+        )
+    """
+
+    def __init__(self, name: str, t_data: np.ndarray, v_data: np.ndarray,
+                 labels: dict, colors: Optional[dict] = None,
+                 color: str = "#2980b9", lw: float = 2.5, **kwargs):
+        super().__init__(name, color, lw, **kwargs)
+        self.labels = labels                       # {int_code: str_label}
+        self.colors = colors or {}                 # {int_code: str_color}
+        self.breakpoints = to_digital_bps(t_data, v_data)
+
+    def evaluate(self, t: np.ndarray) -> np.ndarray:
+        s = np.zeros_like(t)
+        bp = self.breakpoints
+        for i, (t0, v) in enumerate(bp):
+            t1 = bp[i + 1][0] if i + 1 < len(bp) else t[-1] + 1
+            s[(t >= t0) & (t < t1)] = v
+        return s
 
 
 # ── Digital signals ───────────────────────────────────────────────────────────

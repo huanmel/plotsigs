@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 from typing import List, Optional, Tuple, Union
 from pathlib import Path
 
-from .signals import Signal, SteppedSignal, LaggedSignal, RawSignal, DigitalSignal, DerivedSignal, Breakpoints
+from .signals import Signal, SteppedSignal, LaggedSignal, RawSignal, DigitalSignal, DerivedSignal, EnumeratedSignal, Breakpoints
 from .annotations import (
     Threshold, ToleranceBand, PctToleranceBand, ComparisonConfig,
     VLine, VSpan, PhaseLabel, Callout, EventDurationAnnotation,
@@ -133,6 +133,7 @@ class SignalGroup:
 
     def add_transient_analysis(self, reference: str, feedback: str,
                        tolerance_pct: float = 5.0,
+                       tolerance_abs: Optional[float] = None,
                        show_settling: bool = True,
                        show_overshoot: bool = True,
                        show_rise_time: bool = True,
@@ -145,15 +146,17 @@ class SignalGroup:
         """
         Overlay setpoint-vs-feedback analysis annotations.
 
-        Draws a ±tolerance_pct% error band around the reference signal, plus
-        MATLAB-style cross-hair dashed lines and labels for each requested
-        characteristic (overshoot, settling time, rise time, steady state).
+        Draws a tolerance band around the reference signal, plus MATLAB-style
+        cross-hair dashed lines and labels for each requested characteristic
+        (overshoot, settling time, rise time, steady state).
 
         Parameters
         ----------
         reference        : signal name of the setpoint / reference
         feedback         : signal name of the feedback / response
-        tolerance_pct    : half-width of the error band in % of setpoint value
+        tolerance_pct    : half-width of the band in % of setpoint value (default 5%)
+        tolerance_abs    : half-width of the band in absolute engineering units;
+                           overrides tolerance_pct when set
         show_crosshairs  : draw dashed lines connecting characteristics to axes
         phase            : PhaseLabel returned by Diagram.add_phase() — sets
                            after_t and before_t from the phase's t0 / t1.
@@ -169,6 +172,7 @@ class SignalGroup:
         self.comparisons.append(ComparisonConfig(
             reference=reference, feedback=feedback,
             tolerance_pct=tolerance_pct,
+            tolerance_abs=tolerance_abs,
             show_settling=show_settling,
             show_overshoot=show_overshoot,
             show_rise_time=show_rise_time,
@@ -227,6 +231,22 @@ class SignalGroup:
         sig_b = self._signal_map[b] if isinstance(b, str) else b
         return self._register(DerivedSignal(name, sig_a, sig_b, color=color, **kwargs))
 
+    def add_enum(self, name: str, t_data: np.ndarray, v_data: np.ndarray,
+                 labels: dict, colors: Optional[dict] = None,
+                 color: str = "#2980b9", lw: float = 2.5, **kwargs) -> EnumeratedSignal:
+        """
+        Add an enumerated (state-machine) signal with named integer levels.
+
+        Parameters
+        ----------
+        t_data, v_data : dense time and integer-code arrays (e.g. from numpy)
+        labels         : {int_code: str_label}, e.g. {1: "Heating", 2: "Circulation"}
+        colors         : {int_code: str_color} — per-level band shading (optional)
+        """
+        return self._register(EnumeratedSignal(name, t_data, v_data, labels,
+                                               colors=colors, color=color,
+                                               lw=lw, **kwargs))
+
 
 # ── Diagram ───────────────────────────────────────────────────────────────────
 
@@ -269,8 +289,12 @@ class Diagram:
         digital_ratio: float = 1.4,
         ylabel_analog: str = "Value",
         xlabel: str = "Time [s]",
+        caption: str = "",
+        caption_fontsize: float = 14,
     ):
         self.title = title
+        self.caption = caption
+        self.caption_fontsize = caption_fontsize
         self.t = np.linspace(t_start, t_end, n_points)
         self.figsize = figsize
         self.analog_ratio = analog_ratio
@@ -413,7 +437,8 @@ class Diagram:
     def add_phase(self, t0: float, t1: float, label: str,
                   color: str = "#555555",
                   show_vline: bool = True,
-                  vline_label: bool = True) -> PhaseLabel:
+                  vline_label: bool = True,
+                  status: Optional[str] = None) -> PhaseLabel:
         """
         Add a phase label and return the PhaseLabel object.
 
@@ -422,10 +447,16 @@ class Diagram:
         ``t0`` across every subplot; ``vline_label=True`` adds the phase name
         rotated 90° on the line (FMU / MATLAB step-marker style).
 
+        ``status`` overrides ``color``:
+            - ``"pass"`` → green vline and label
+            - ``"fail"`` → red vline and label + × marker at top of each subplot
+            - ``None``   → use ``color`` (default gray)
+
         The returned PhaseLabel can be passed directly to ``add_transient_analysis(phase=...)``
         to restrict the analysis window to this phase's time range.
         """
-        ph = PhaseLabel(t0, t1, label, color, show_vline=show_vline, vline_label=vline_label)
+        ph = PhaseLabel(t0, t1, label, color, show_vline=show_vline,
+                        vline_label=vline_label, status=status)
         self._phase_labels.append(ph)
         return ph
 
@@ -459,6 +490,19 @@ class Diagram:
         -------
         matplotlib.figure.Figure
         """
+        if show:
+            import os
+            import matplotlib
+            if ("MPLBACKEND" not in os.environ
+                    and matplotlib.get_backend().lower()
+                    in ("agg", "pdf", "ps", "svg", "cairo")):
+                for _be in ("TkAgg", "Qt5Agg", "Qt6Agg", "wxAgg"):
+                    try:
+                        plt.switch_backend(_be)
+                        break
+                    except Exception:
+                        continue
+
         from . import renderer
         fig = renderer.render(self)
 
@@ -471,6 +515,38 @@ class Diagram:
                 fig.savefig(p, format=fmt, bbox_inches="tight", dpi=dpi)
 
         if show:
+            renderer.add_nav_buttons(fig, fig.get_axes(),
+                                     float(self.t[0]), float(self.t[-1]))
             plt.show()
 
         return fig
+
+    def export(self, path, dpi: int = 150) -> None:
+        """
+        Export to draw.io (.drawio) or Excalidraw (.excalidraw) based on extension.
+
+        The diagram is rendered to a PNG background image; key annotations
+        (phase labels, threshold labels, title, vline/vspan labels) are added
+        as native editable shapes so collaborators can edit without Python.
+
+        Parameters
+        ----------
+        path : str or Path — must end with .drawio or .excalidraw
+        dpi  : resolution of the embedded background PNG
+
+        Example
+        -------
+            d.export("output/analysis.drawio")
+            d.export("output/analysis.excalidraw")
+        """
+        from . import export as _export
+        from pathlib import Path as _Path
+        p = _Path(path)
+        if p.suffix == ".drawio":
+            _export.export_drawio(self, p, dpi=dpi)
+        elif p.suffix == ".excalidraw":
+            _export.export_excalidraw(self, p, dpi=dpi)
+        else:
+            raise ValueError(
+                f"Unsupported export format: {p.suffix!r}. Use .drawio or .excalidraw"
+            )

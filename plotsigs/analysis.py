@@ -31,9 +31,10 @@ def settling_time(
     threshold_pct: float = 2.0,
     after_t:  Optional[float] = None,
     before_t: Optional[float] = None,
+    threshold_abs: Optional[float] = None,
 ) -> Optional[float]:
     """
-    First time feedback enters and stays within ±threshold_pct% of the final
+    First time feedback enters and stays within the tolerance band of the final
     setpoint value.  Default 2% matches MATLAB stepinfo() SettlingTimeThreshold.
 
     'Stays within' means it never leaves the band again inside the window.
@@ -41,6 +42,11 @@ def settling_time(
 
     Parameters
     ----------
+    threshold_pct
+        Half-width of the band as % of final setpoint (used when threshold_abs is None).
+    threshold_abs
+        Half-width of the band in absolute engineering units.  Takes precedence
+        over threshold_pct when set.
     after_t / before_t
         Analysis window — useful for isolating one step in multi-step data.
     """
@@ -50,10 +56,12 @@ def settling_time(
         return None
 
     ss = float(sp[-1])   # steady-state (final setpoint value), matches MATLAB
-    with np.errstate(divide="ignore", invalid="ignore"):
-        err_pct = np.where(ss != 0, np.abs((fb - ss) / ss) * 100.0, 0.0)
-
-    out_idx = np.where(err_pct > threshold_pct)[0]
+    if threshold_abs is not None:
+        out_idx = np.where(np.abs(fb - ss) > threshold_abs)[0]
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            err_pct = np.where(ss != 0, np.abs((fb - ss) / ss) * 100.0, 0.0)
+        out_idx = np.where(err_pct > threshold_pct)[0]
     if len(out_idx) == 0:
         return float(tm[0])       # always in band from the start
     last_out = out_idx[-1]

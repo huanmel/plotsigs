@@ -193,6 +193,124 @@ g.add_measured_digital("DrvrOut_IsRunOk", df)             # 0/1 lane
 g.add_derived("Error", "AC_Set_Speed", "Running_Speed")   # computed a − b
 ```
 
+### Converting numpy arrays — `to_digital_bps()`
+
+When you have a signal as a dense numpy array (e.g. computed from a simulation
+or derived from conditions), convert it to breakpoints so you can add it as a
+`DigitalSignal`:
+
+```python
+import numpy as np
+from plotsigs import Diagram, to_digital_bps
+
+t    = np.linspace(0, 100, 5000)
+mode = np.where(t < 30, 1.0, np.where(t < 70, 2.0, 3.0))  # integer codes
+
+# Derive binary signals from the mode array
+heater_on = (mode == 1).astype(float)   # numpy array → DigitalSignal
+cooler_on = (mode == 3).astype(float)
+
+d = Diagram("My Diagram", t_end=100)
+g_flags = d.add_digital_group("Actuators")
+g_flags.add_digital("Heater ON", to_digital_bps(t, heater_on), color="#e74c3c")
+g_flags.add_digital("Cooler ON", to_digital_bps(t, cooler_on), color="#3498db")
+```
+
+`to_digital_bps()` strips redundant samples and keeps only transition points,
+so it works efficiently even on dense simulation arrays with thousands of points.
+
+### Plant simulation — `plotsigs.sim`
+
+`plotsigs.sim` provides ready-to-use ODE integrators so diagram scripts focus
+on what to show, not on implementing integrators:
+
+```python
+from plotsigs.sim import (
+    first_order,              # G(s) = 1/(τs+1)  — scipy.lsim
+    second_order,             # G(s) = ωn²/(s²+2ζωn·s+ωn²)  — scipy.lsim
+    second_order_saturated,   # 2nd-order + actuator rate limit  — Euler
+    second_order_disturbed,   # 2nd-order + additive forcing     — Euler
+    transport_delay,          # pure time delay (zero-order hold)
+)
+
+t   = np.linspace(0, 100, 5000)
+u   = np.where(t < 10, 20.0, 27.0)   # setpoint step
+
+y1  = first_order(t, u, tau=8.0)                              # 1st-order lag
+y2  = second_order(t, u, omega_n=0.3, zeta=0.4)              # 2nd-order step
+y3  = second_order_disturbed(t, u, 0.3, 0.1,
+                             disturbance=np.where(t>50, 0.3, 0.0))  # + heat load
+y4  = transport_delay(y2, t, delay=5.0)                       # 5 s dead time
+
+g.add_raw("Response", t, y2, color="#e74c3c")
+```
+
+---
+
+## Reusable diagram templates
+
+When multiple scenarios share the same group layout — same panels, same
+annotations, same threshold lines — define a helper function that takes a
+`Diagram` and adds the groups to it. Each scenario then calls the helper once
+and customises only what differs:
+
+```python
+MODE_LABELS = {1: "Heating", 2: "Circulation", 3: "Cooling"}
+MODE_COLORS = {1: "#e74c3c", 2: "#9b59b6", 3: "#3498db"}
+DEAD = 4.0  # °C
+
+def add_tms_groups(d, t, T_MR, T_SP, mode):
+    """Standard 3-panel TMS layout: Temperature + Error + Mode."""
+    g_temp = d.add_group("Temperature [°C]")
+    g_temp.add_raw("T_SP", t, T_SP, color="#2ecc71", lw=2.0)
+    g_temp.add_raw("T_MR", t, T_MR, color="#e74c3c", lw=1.8)
+    g_temp.add_tolerance("T_SP", DEAD, color="#9b59b6",
+                         label=f"+-{DEAD:.0f} degC mode band")
+
+    g_err = d.add_group("T_ERR [°C]")
+    g_err.add_derived("T_err", "T_MR", "T_SP", color="#8e44ad")
+    g_err.add_threshold( DEAD, label=f"+{DEAD} -> Cooling", color="#3498db", ls="--")
+    g_err.add_threshold(-DEAD, label=f"-{DEAD} -> Heating", color="#e74c3c", ls="--")
+
+    g_mode = d.add_group("TMS Mode")
+    g_mode.add_enum("Mode", t, mode, labels=MODE_LABELS, colors=MODE_COLORS)
+    return g_temp, g_err, g_mode
+
+# Scenario A — clean step response
+d_a = Diagram("Scenario A", t_end=T_END)
+g_temp, g_err, g_mode = add_tms_groups(d_a, t, T_MR_a, T_SP, mode_a)
+g_temp.add_transient_analysis("T_SP", "T_MR", tolerance_pct=5.0)  # add on top
+d_a.render(output="output/scenario_a.png", show=False)
+
+# Scenario B — same template, different data
+d_b = Diagram("Scenario B — Disturbed", t_end=T_END)
+g_temp, g_err, g_mode = add_tms_groups(d_b, t, T_MR_b, T_SP, mode_b)
+g_temp.add_callout("T_MR", 80, label="Boundary chattering", offset=(3, 1.5))
+d_b.render(output="output/scenario_b.png", show=False)
+```
+
+The same pattern works for **naive vs. correct** comparisons: add two mode
+panels to one diagram using the same time/temperature data but different mode
+arrays, then let the reader compare them visually:
+
+```python
+d = Diagram("Standard vs. Hysteresis", t_end=T_END, figsize=(14, 13))
+# Shared temperature panel
+g_temp = d.add_group("Temperature [°C]")
+g_temp.add_raw("T_SP", t, T_SP, color="#2ecc71", lw=2.0)
+g_temp.add_raw("T_MR", t, T_MR, color="#e74c3c", lw=1.8)
+# Two separate mode panels
+d.add_group("Mode — Standard").add_enum(
+    "Mode_std",  t, mode_std,  labels=MODE_LABELS, colors=MODE_COLORS)
+d.add_group("Mode — Hysteresis").add_enum(
+    "Mode_hyst", t, mode_hyst, labels=MODE_LABELS, colors=MODE_COLORS)
+d.render(output="output/comparison.png", show=False)
+```
+
+See [`examples/ex_template_function.py`](examples/ex_template_function.py) and
+[`examples/ex_compare_naive_correct.py`](examples/ex_compare_naive_correct.py)
+for complete working versions.
+
 ---
 
 ## API reference
@@ -216,7 +334,7 @@ d = Diagram(
 | --- | --- | --- |
 | `add_group(ylabel)` | `SignalGroup` | Add an analog subplot |
 | `add_digital_group(ylabel)` | `SignalGroup` | Add a digital stacked-lane subplot |
-| `add_phase(t0, t1, label, color, show_vline, vline_label)` | `PhaseLabel` | Phase arrow on x-axis; vertical dashed line across all subplots |
+| `add_phase(t0, t1, label, color, show_vline, vline_label, status)` | `PhaseLabel` | Phase arrow on x-axis; `status="pass"` → green, `status="fail"` → red + × marker |
 | `add_vline(t, label, color, ls, panel)` | `self` | Vertical marker across all subplots |
 | `add_vspan(t0, t1, label, color, alpha, panel)` | `self` | Shaded region across all subplots |
 | `render(output, show, dpi)` | `Figure` | Build and optionally save the figure |
@@ -230,6 +348,7 @@ d = Diagram(
 | `add_raw(name, t_data, v_data, color)` | `RawSignal` | Signal from numpy arrays |
 | `add_measured(name, df, time_col, value_col, color)` | `RawSignal` | Signal from a DataFrame column |
 | `add_derived(name, a, b, color)` | `DerivedSignal` | Computed `a − b`; a/b are signal names or objects |
+| `add_enum(name, t_data, v_data, labels, colors)` | `EnumeratedSignal` | Integer state-machine signal; zoom-reactive labels, colored bands per level |
 
 ### `SignalGroup` — analog annotations
 
@@ -401,7 +520,9 @@ steps = analysis.find_steps(t, setpoint, min_step_pct=5.0)
 
 ---
 
-## Batch processing — multiple logs from one template
+## Batch processing
+
+### Multiple logs from one YAML template
 
 When many log files share the same signal names and analysis config but differ
 in timing (phase boundaries), define a template YAML with no data source and
@@ -432,6 +553,48 @@ for log in LOGS:
     d.render(output=log["output"], show=False)
 ```
 
+### Script-based batch runner
+
+When each case has its own Python script (simulation parameters, bespoke
+annotations, computed captions), run them all via subprocess and collect
+pass/fail results:
+
+```python
+import subprocess, sys, time
+from pathlib import Path
+
+SCRIPTS = [
+    "cases/tms_baseline.py",
+    "cases/tms_fix_hysteresis.py",
+    "cases/tms_flt_vcu_offline.py",
+    # ...
+]
+
+ok, failed = [], []
+for script in SCRIPTS:
+    label = Path(script).stem
+    t0 = time.perf_counter()
+    result = subprocess.run(
+        [sys.executable, script],
+        capture_output=True, text=True,
+        env={**__import__("os").environ, "MPLBACKEND": "Agg"},  # non-interactive
+    )
+    elapsed = time.perf_counter() - t0
+    if result.returncode == 0:
+        ok.append(label);  print(f"  OK  {label:<40} ({elapsed:.1f}s)")
+    else:
+        failed.append(label); print(f"FAIL  {label:<40}")
+        print(result.stderr.strip())
+
+print(f"\n{len(ok)}/{len(SCRIPTS)} scripts succeeded.")
+if failed:
+    sys.exit(1)
+```
+
+Set `MPLBACKEND=Agg` in the subprocess environment to force non-interactive
+rendering — avoids GUI windows and works in CI.
+See [`examples/ex_batch.py`](examples/ex_batch.py) for a complete runner.
+
 ---
 
 ## Examples
@@ -449,6 +612,10 @@ See **[EXAMPLES.md](EXAMPLES.md)** for the full catalog with rendered output ima
 | `ex_plot_from_yaml.py` | YAML loader — synthetic + real CSV data |
 | `ex_real_log_analysis.py` | Real compressor log — phase-first + transient analysis |
 | `ex_multi_log_analysis.py` | Batch template — two logs, one YAML, overrides per run |
+| `ex_template_function.py` | Reusable diagram template + `plotsigs.sim` + `to_digital_bps()` |
+| `ex_compare_naive_correct.py` | Dual-panel naive vs. correct — hysteresis fix, phase pass/fail |
+| `ex_enum_phases.py` | `add_enum()` zoom-reactive labels + phase `status="pass"/"fail"` |
+| `ex_batch.py` | Subprocess batch runner — regenerate all outputs, collect pass/fail |
 
 Run any example from the repo root:
 
