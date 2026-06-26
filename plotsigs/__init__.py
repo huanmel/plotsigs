@@ -25,6 +25,7 @@ from plotsigs.loader import load_yaml
 from plotsigs.quickplot import plot_signals, plot_signals_from_yaml
 from plotsigs.export import export_drawio, export_excalidraw
 from plotsigs.spec import render_spec
+from plotsigs.renderer_plotly import render_plotly
 from plotsigs import analysis, sim
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "Callout",
     "load_yaml",
     "render_spec",
+    "render_plotly",
     "plot_signals",
     "plot_signals_from_yaml",
     "export_drawio",

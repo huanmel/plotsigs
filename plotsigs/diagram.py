@@ -472,6 +472,39 @@ class Diagram:
 
     # ── Render ────────────────────────────────────────────────────────────────
 
+    def render_plotly(self, output=None, show: bool = True):
+        """
+        Render to an interactive Plotly Figure.
+
+        Parameters
+        ----------
+        output : str or Path, optional
+            If provided, saves a standalone interactive HTML file.
+        show : bool
+            Open in the browser (default True).
+
+        Returns
+        -------
+        plotly.graph_objects.Figure
+        """
+        from .renderer_plotly import render_plotly
+        return render_plotly(self, output=output, show=show)
+
+    def run_dash(self, port: int = 8050, debug: bool = False) -> None:
+        """
+        Launch a full Dash application for this Diagram.
+
+        Opens a browser tab at http://localhost:<port>/.
+        Blocks until the server is stopped (Ctrl-C).
+
+        Parameters
+        ----------
+        port  : TCP port (default 8050)
+        debug : Enable Dash hot-reload / debug panel
+        """
+        from .dash_app import run_dash
+        run_dash(self, port=port, debug=debug)
+
     def render(self, output: Optional[Union[str, Path, List]] = None,
                show: bool = True, dpi: int = 150) -> plt.Figure:
         """

@@ -94,9 +94,12 @@ The ``type`` field disambiguates the two uses.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Union
+from typing import List, TYPE_CHECKING, Union
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -106,9 +109,10 @@ def render_spec(
     output: Union[str, Path, List, None] = None,
     show: bool = True,
     dpi: int = 150,
-) -> object:
+    backend: str = "matplotlib",
+):
     """
-    Render a PlotSpec dict to a matplotlib Figure.
+    Render a PlotSpec dict.
 
     Parameters
     ----------
@@ -116,15 +120,17 @@ def render_spec(
         PlotSpec with optional keys: meta, data, groups, annotations.
         See module docstring for the full format.
     output : str, Path, or list, optional
-        Save path(s). Format inferred from extension (.png, .svg).
+        Save path(s). For matplotlib: .png/.svg; for plotly: .html.
     show : bool
-        Call plt.show() after rendering (default True).
+        Show the figure after rendering (default True).
     dpi : int
-        Resolution for raster output (default 150).
+        Resolution for raster output (matplotlib only, default 150).
+    backend : str
+        ``"matplotlib"`` (default), ``"plotly"``, or ``"dash"``.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    matplotlib.figure.Figure or plotly.graph_objects.Figure
     """
     from .diagram import Diagram
     from .loader import (
@@ -170,6 +176,10 @@ def render_spec(
 
     _load_diagram_annotations(d, spec.get("annotations", []))
 
+    if backend == "plotly":
+        return d.render_plotly(output=output, show=show)
+    if backend == "dash":
+        return d.run_dash()
     return d.render(output=output, show=show, dpi=dpi)
 
 

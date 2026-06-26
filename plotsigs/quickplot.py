@@ -97,16 +97,10 @@ def plot_signals(
     -------
     matplotlib.figure.Figure
     """
-    from .diagram import Diagram
+    from .spec import render_spec
 
     specs = _normalise(groups)
-
-    d = Diagram(
-        title=title,
-        t_end=float(df[time_col].max()),
-        t_start=float(df[time_col].min()),
-        figsize=figsize or (14, max(5, 3 * len(specs))),
-    )
+    plot_groups: list = []
 
     for spec in specs:
         sig_names = spec["signals"]
@@ -115,7 +109,7 @@ def plot_signals(
         ref_lines = spec.get("ref_lines", [])
 
         # Warn and skip missing columns
-        missing   = [s for s in sig_names if s not in df.columns]
+        missing = [s for s in sig_names if s not in df.columns]
         if missing:
             print(f"plot_signals: signals not in DataFrame, skipping: {missing}")
         sig_names = [s for s in sig_names if s in df.columns]
@@ -126,26 +120,44 @@ def plot_signals(
         if mode is None:
             mode = "digital" if (auto_digital and _all_digital(df, sig_names)) else "analog"
 
-        if mode == "digital":
-            g = d.add_digital_group(ylabel)
-            for i, name in enumerate(sig_names):
-                g.add_measured_digital(name, df, time_col=time_col,
-                                       color=_COLORS[i % len(_COLORS)])
-        else:
-            g = d.add_group(ylabel or _auto_ylabel(sig_names))
-            for i, name in enumerate(sig_names):
-                g.add_measured(name, df, time_col=time_col,
-                               color=_COLORS[i % len(_COLORS)])
-            for i, rl in enumerate(_normalise_ref_lines(ref_lines)):
-                g.add_threshold(
-                    rl["value"],
-                    label=rl.get("label", ""),
-                    color=rl.get("color", _REF_COLORS[i % len(_REF_COLORS)]),
-                    ls=rl.get("ls", "--"),
-                    lw=rl.get("lw", 0.9),
-                )
+        signal_specs = [
+            {"name": name, "column": name, "color": _COLORS[i % len(_COLORS)]}
+            for i, name in enumerate(sig_names)
+        ]
 
-    return d.render(output=output, show=show)
+        enriched_refs = [
+            {
+                "value": rl["value"],
+                "label": rl.get("label", ""),
+                "color": rl.get("color", _REF_COLORS[i % len(_REF_COLORS)]),
+                "ls":    rl.get("ls", "--"),
+                "lw":    rl.get("lw", 0.9),
+            }
+            for i, rl in enumerate(_normalise_ref_lines(ref_lines))
+        ]
+
+        plot_groups.append({
+            "ylabel":    ylabel or (_auto_ylabel(sig_names) if mode != "digital" else ""),
+            "mode":      mode,
+            "signals":   signal_specs,
+            "ref_lines": enriched_refs,
+        })
+
+    return render_spec(
+        {
+            "meta": {
+                "title":    title,
+                "figsize":  list(figsize or (14, max(5, 3 * len(plot_groups)))),
+                "t_start":  float(df[time_col].min()),
+                "t_end":    float(df[time_col].max()),
+                "n_points": 2000,
+            },
+            "data": {"_default": {"df": df, "time_col": time_col}},
+            "groups": plot_groups,
+        },
+        output=output,
+        show=show,
+    )
 
 
 def plot_signals_from_yaml(
