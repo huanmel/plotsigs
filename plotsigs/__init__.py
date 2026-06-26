@@ -24,6 +24,7 @@ from plotsigs.annotations import Threshold, ToleranceBand, PctToleranceBand, VLi
 from plotsigs.loader import load_yaml
 from plotsigs.quickplot import plot_signals, plot_signals_from_yaml
 from plotsigs.export import export_drawio, export_excalidraw
+from plotsigs.spec import render_spec
 from plotsigs import analysis, sim
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "PhaseLabel",
     "Callout",
     "load_yaml",
+    "render_spec",
     "plot_signals",
     "plot_signals_from_yaml",
     "export_drawio",
