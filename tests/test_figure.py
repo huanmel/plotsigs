@@ -68,3 +68,22 @@ def test_digital_traces_on_second_axis(plotly_figure, trace_meta):
                       if m["is_signal"] and m["group_idx"] == 1]
     for tr in digital_traces:
         assert tr.yaxis == "y2"
+
+
+# ── ROAD-20: plotly-resampler integration ─────────────────────────────────────
+
+def test_resampler_wraps_figure(minimal_diagram):
+    """_build_figure(use_resampler=True) returns a FigureResampler instance."""
+    pytest.importorskip("plotly_resampler")
+    from plotly_resampler import FigureResampler
+    from plotsigs.renderer_plotly import _build_figure
+    fig = _build_figure(minimal_diagram, use_resampler=True)
+    assert isinstance(fig, FigureResampler)
+
+
+def test_signal_trace_count_unchanged_with_resampler(minimal_diagram, plotly_figure):
+    """FigureResampler wrapper adds no extra traces vs plain go.Figure."""
+    pytest.importorskip("plotly_resampler")
+    from plotsigs.renderer_plotly import _build_figure
+    fig_r = _build_figure(minimal_diagram, use_resampler=True)
+    assert len(fig_r.data) == len(plotly_figure.data)

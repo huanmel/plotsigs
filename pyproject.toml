@@ -19,8 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 pandas = ["pandas>=1.5"]
 plotly = ["plotly>=5.18"]
-dash   = ["plotly>=5.18", "dash>=2.14"]
-dev    = ["pytest", "ruff", "black", "pandas>=1.5", "plotly>=5.18", "dash>=2.14"]
+dash   = ["plotly>=5.18", "dash>=2.14", "plotly-resampler>=0.9"]
+dev    = ["pytest", "ruff", "black", "pandas>=1.5", "plotly>=5.18", "dash>=2.14", "plotly-resampler>=0.9"]
 
 [tool.ruff]
 line-length = 100

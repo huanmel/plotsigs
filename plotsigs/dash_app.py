@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 # Module-level logger — handlers are configured inside run_dash() so tests stay silent.
 _log = logging.getLogger("plotsigs.dash")
 
+try:
+    from plotly_resampler import FigureResampler as _FigureResampler
+    _RESAMPLER = True
+except ImportError:
+    _RESAMPLER = False
+
+_RESAMPLE_THRESHOLD = 50_000  # points; above this, send only 2k samples to browser
+
+# Mutable ref to the latest FigureResampler so the zoom callback always queries the
+# most recently rebuilt figure without needing re-registration.
+_fr_ref: list = [None]
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,12 +81,12 @@ def _classify_traces(fig, d: "Diagram") -> list[dict]:
     return meta
 
 
-def _find_nearest_signal(click_point, t, active):
+def _find_nearest_signal(click_point, t, active, trace_meta=None):
     """
-    Resolve clicked signal from clickData point using customdata.
+    Resolve clicked signal from clickData point.
 
-    Each signal trace carries customdata=[[sig.name, group_idx], ...] per point,
-    set by renderer_plotly._draw_analog / _draw_digital (ROAD-22).
+    Primary path (ROAD-22): customdata=[[sig.name, group_idx], ...] per point.
+    Fallback (ROAD-20 resampler): customdata absent → use curveNumber + trace_meta.
 
     Returns (signal_obj, y_at_x, group_idx).
     """
@@ -82,6 +94,11 @@ def _find_nearest_signal(click_point, t, active):
     if cd and len(cd) >= 2:
         sig_name = cd[0]
         group_idx = int(cd[1])
+    elif trace_meta is not None:
+        curve_num = int(click_point.get("curveNumber", 0))
+        meta = trace_meta[curve_num] if 0 <= curve_num < len(trace_meta) else {}
+        sig_name = meta.get("sig_name")
+        group_idx = int(meta.get("group_idx") or 0)
     else:
         group_idx = 0
         sig_name = None
@@ -168,6 +185,7 @@ def _overlay_annotations(fig, annotations, n_rows: int) -> None:
 
 
 def _build_main_figure(d, use_gl=True, tool=None, ann_type=None,
+                       use_resampler=False,
                        sig_a_name=None, sig_b_name=None,
                        deriv_sig_name=None, deriv_window=11,
                        smooth_sig_name=None, smooth_window=11,
@@ -180,7 +198,7 @@ def _build_main_figure(d, use_gl=True, tool=None, ann_type=None,
     """
     from .renderer_plotly import _build_figure
 
-    fig = _build_figure(d, use_gl=use_gl)
+    fig = _build_figure(d, use_gl=use_gl, use_resampler=use_resampler)
     active = [g for g in d._groups if g.signals]
     n_rows = len(active)
     t = d.t
@@ -301,7 +319,12 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     active = [g for g in d._groups if g.signals]
     n_rows = len(active)
 
+    # ── Resampler: use when dataset is large and library is available ─────────
+    use_resampler = _RESAMPLER and len(t) > _RESAMPLE_THRESHOLD
+
     # ── Trace metadata & legend entries ───────────────────────────────────────
+    # _base_fig is always built without resampler so _classify_traces sees
+    # customdata (which resampler traces omit).
     _base_fig = _build_figure(d)
     trace_meta = _classify_traces(_base_fig, d)
 
@@ -323,7 +346,9 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     sig_options = [{"label": s, "value": s} for s in all_sig_names]
 
     # Build initial figure
-    initial_fig = _build_main_figure(d)
+    initial_fig = _build_main_figure(d, use_resampler=use_resampler)
+    if use_resampler:
+        _fr_ref[0] = initial_fig
 
     # ── Shared styles ─────────────────────────────────────────────────────────
     _sticky_pane = {
@@ -701,10 +726,11 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     def _update_main(tool, sig_a, sig_b, deriv_sig, deriv_win,
                      smooth_sig, smooth_win, stored_anns, visible_vals, ann_type_val):
         visible_idxs = {int(v) for v in (visible_vals or [])}
-        return _build_main_figure(
+        fig = _build_main_figure(
             d,
             tool=tool,
             ann_type=ann_type_val,
+            use_resampler=use_resampler,
             sig_a_name=sig_a,
             sig_b_name=sig_b,
             deriv_sig_name=deriv_sig,
@@ -714,6 +740,9 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
             stored_annotations=stored_anns,
             visible_idxs=visible_idxs,
         )
+        if use_resampler:
+            _fr_ref[0] = fig
+        return fig
 
     # ══════════════════════════════════════════════════════════════════════════
     # Callback 3: update ANALYSIS pane (right-side graph)
@@ -829,7 +858,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         color = ann_color or "#d62728"
 
         if ann_type == "point":
-            sig_obj, y_snapped, group_idx = _find_nearest_signal(pt, t, active)
+            sig_obj, y_snapped, group_idx = _find_nearest_signal(pt, t, active, trace_meta)
             yaxis = _yaxis_ref(group_idx)
             sig_name = (sig_obj.label or sig_obj.name) if sig_obj else ""
             _log.debug("[annotate] point sig=%s x=%.4f y_snap=%.4g group=%d yaxis=%s",
@@ -878,7 +907,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
 
         use_auto = "auto" in (auto_mode or [])
         if use_auto:
-            sig_obj, y_val, _ = _find_nearest_signal(pt, t, active)
+            sig_obj, y_val, _ = _find_nearest_signal(pt, t, active, trace_meta)
             if sig_obj is None:
                 raise dash.exceptions.PreventUpdate
             sig_name = sig_obj.label or sig_obj.name
@@ -1122,7 +1151,30 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         return p
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Callback 14: download HTML
+    # Callback 14 (optional): plotly-resampler dynamic zoom — only registered
+    # when dataset exceeds RESAMPLE_THRESHOLD and library is installed.
+    # ══════════════════════════════════════════════════════════════════════════
+    if use_resampler:
+        @app.callback(
+            Output("main-graph", "figure", allow_duplicate=True),
+            Input("main-graph",  "relayoutData"),
+            State("main-graph",  "figure"),
+            prevent_initial_call=True,
+        )
+        def _resample_on_zoom(relayout_data, current_fig):
+            fr = _fr_ref[0]
+            if fr is None or not relayout_data:
+                raise dash.exceptions.PreventUpdate
+            try:
+                patch = fr.construct_update_data_patch(relayout_data, current_fig)
+            except Exception:
+                raise dash.exceptions.PreventUpdate
+            if patch is None:
+                raise dash.exceptions.PreventUpdate
+            return patch
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Callback 15: download HTML
     # ══════════════════════════════════════════════════════════════════════════
     @app.callback(
         Output("download-html", "data"),

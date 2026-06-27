@@ -155,7 +155,8 @@ def render_plotly(
 
 # ── Figure builder ────────────────────────────────────────────────────────────
 
-def _build_figure(d: "Diagram", use_gl: bool = True) -> "go.Figure":
+def _build_figure(d: "Diagram", use_gl: bool = True,
+                  use_resampler: bool = False) -> "go.Figure":
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -171,12 +172,22 @@ def _build_figure(d: "Diagram", use_gl: bool = True) -> "go.Figure":
     total = sum(raw)
     row_heights = [r / total for r in raw]
 
-    fig = make_subplots(
+    subplots = make_subplots(
         rows=n_rows, cols=1,
         shared_xaxes=True,
         row_heights=row_heights,
         vertical_spacing=0.03,
     )
+
+    if use_resampler:
+        try:
+            from plotly_resampler import FigureResampler
+            fig = FigureResampler(subplots, default_n_shown_samples=2_000)
+        except ImportError:
+            use_resampler = False
+            fig = subplots
+    else:
+        fig = subplots
 
     t = d.t
     t_max = float(t[-1])
@@ -184,9 +195,11 @@ def _build_figure(d: "Diagram", use_gl: bool = True) -> "go.Figure":
     # ── Draw each group ───────────────────────────────────────────────────────
     for row_idx, grp in enumerate(active, start=1):
         if grp.mode == "analog":
-            _draw_analog(grp, fig, t, t_max, row_idx, d._signal_map, use_gl=use_gl)
+            _draw_analog(grp, fig, t, t_max, row_idx, d._signal_map,
+                         use_gl=use_gl, use_resampler=use_resampler)
         else:
-            _draw_digital(grp, fig, t, t_max, row_idx, d._signal_map, use_gl=use_gl)
+            _draw_digital(grp, fig, t, t_max, row_idx, d._signal_map,
+                          use_gl=use_gl, use_resampler=use_resampler)
 
     # ── Diagram-level VSpans ──────────────────────────────────────────────────
     for vs in d._vspans:
@@ -352,7 +365,8 @@ def _build_figure(d: "Diagram", use_gl: bool = True) -> "go.Figure":
 # ── Per-group drawing helpers ─────────────────────────────────────────────────
 
 def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
-                 row: int, signal_map: dict, use_gl: bool = True) -> None:
+                 row: int, signal_map: dict, use_gl: bool = True,
+                 use_resampler: bool = False) -> None:
     import plotly.graph_objects as go
 
     vals = {sig.name: sig.evaluate(t) for sig in grp.signals}
@@ -525,23 +539,24 @@ def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
             for code in sorted(sig.labels.keys()):
                 fig.add_hline(y=code, row=row, col=1,
                               line_color="lightgray", line_width=0.5, opacity=0.8)
-            fig.add_trace(go.Scatter(
-                x=t, y=v,
-                mode="lines",
-                line=dict(color=sig.color, width=sig.lw, shape="hv"),
-                name=sig.label,
-                legendgroup=sig.name,
-                customdata=_cd,
-            ), row=row, col=1)
+            _base_kw = dict(mode="lines",
+                            line=dict(color=sig.color, width=sig.lw, shape="hv"),
+                            name=sig.label, legendgroup=sig.name)
+            if use_resampler:
+                fig.add_trace(go.Scatter(**_base_kw), hf_x=t, hf_y=v, row=row, col=1)
+            else:
+                fig.add_trace(go.Scatter(x=t, y=v, customdata=_cd, **_base_kw),
+                              row=row, col=1)
 
         elif isinstance(sig, SteppedSignal):
-            fig.add_trace(go.Scatter(
-                x=t, y=v,
-                mode="lines",
-                line=dict(color=sig.color, width=sig.lw, shape="hv"),
-                name=sig.label,
-                customdata=_cd,
-            ), row=row, col=1)
+            _base_kw = dict(mode="lines",
+                            line=dict(color=sig.color, width=sig.lw, shape="hv"),
+                            name=sig.label)
+            if use_resampler:
+                fig.add_trace(go.Scatter(**_base_kw), hf_x=t, hf_y=v, row=row, col=1)
+            else:
+                fig.add_trace(go.Scatter(x=t, y=v, customdata=_cd, **_base_kw),
+                              row=row, col=1)
 
         else:
             TraceClass = go.Scattergl if (use_gl and len(t) > 500) else go.Scatter
@@ -549,13 +564,12 @@ def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
             ls = getattr(sig, "ls", "-")
             if ls and ls != "-":
                 line_kw["dash"] = _LS_MAP.get(ls, "solid")
-            fig.add_trace(TraceClass(
-                x=t, y=v,
-                mode="lines",
-                line=line_kw,
-                name=sig.label,
-                customdata=_cd,
-            ), row=row, col=1)
+            _base_kw = dict(mode="lines", line=line_kw, name=sig.label)
+            if use_resampler:
+                fig.add_trace(go.Scatter(**_base_kw), hf_x=t, hf_y=v, row=row, col=1)
+            else:
+                fig.add_trace(TraceClass(x=t, y=v, customdata=_cd, **_base_kw),
+                              row=row, col=1)
 
     if enum_sig is not None:
         codes = sorted(enum_sig.labels.keys())
@@ -590,7 +604,8 @@ def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
 
 
 def _draw_digital(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
-                  row: int, signal_map: dict, use_gl: bool = True) -> None:
+                  row: int, signal_map: dict, use_gl: bool = True,
+                  use_resampler: bool = False) -> None:
     import plotly.graph_objects as go
 
     lane_h = style.DIGITAL_LANE_HEIGHT
@@ -602,13 +617,18 @@ def _draw_digital(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
     for i, sig in enumerate(grp.signals):
         offset = i * lane_h
         v = sig.evaluate(t)
-        fig.add_trace(go.Scatter(
-            x=t, y=v * scale + offset,
-            mode="lines",
-            line=dict(color=sig.color, width=sig.lw, shape="hv"),
-            name=sig.label,
-            customdata=[[sig.name, group_idx]] * len(t),
-        ), row=row, col=1)
+        _base_kw = dict(mode="lines",
+                        line=dict(color=sig.color, width=sig.lw, shape="hv"),
+                        name=sig.label)
+        if use_resampler:
+            fig.add_trace(go.Scatter(**_base_kw),
+                          hf_x=t, hf_y=v * scale + offset, row=row, col=1)
+        else:
+            fig.add_trace(go.Scatter(
+                x=t, y=v * scale + offset,
+                customdata=[[sig.name, group_idx]] * len(t),
+                **_base_kw,
+            ), row=row, col=1)
         # lane separator
         fig.add_hline(y=offset, row=row, col=1,
                       line_color="#cccccc", line_width=0.5, opacity=1.0)
