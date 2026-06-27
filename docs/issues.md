@@ -8,7 +8,8 @@ Status: **Fixed** = resolved in current codebase. **Open** = not yet resolved.
 ## Fixed
 
 ### DASH-01 — Digital signal click always selects first signal in lane
-**Status:** Fixed  
+
+**Status:** Fixed
 **File:** `dash_app.py` → `_find_nearest_signal()`
 
 **Symptom:** When clicking on a digital signal subplot, the annotation or delta cursor
@@ -16,9 +17,11 @@ always snapped to the first signal in the group (e.g. `AC_Enable`) regardless of
 lane the user actually clicked.
 
 **Root cause:** Digital signals are rendered at display y-coordinates:
-```
+
+```text
 y_plot = raw_value * DIGITAL_SIGNAL_SCALE + lane_index * DIGITAL_LANE_HEIGHT
 ```
+
 `_find_nearest_signal` was comparing the click y-coordinate (in display units, e.g. 5.1)
 against raw signal values (0 or 1). All signals return the same distance from y_cursor,
 so the first signal always won the tie.
@@ -27,16 +30,19 @@ so the first signal always won the tie.
 comparing. The snapped `y` stored in the annotation is also the display y, so the arrow
 points to the correct lane in the subplot.
 
-**Debug evidence (dash_debug.log before fix):**
-```
+**Debug evidence (`dash_debug.log` before fix):**
+
+```text
 [find_nearest] curve=5 y_cursor=5.1 group=1 → AC_Enable y=1
 ```
-After fix, `IsActVld` (lane 3, display_y = 1*0.9 + 3*1.4 = 5.1) is selected with dist=0.
+
+After fix, `IsActVld` (lane 3, `display_y = 1*0.9 + 3*1.4 = 5.1`) is selected with dist=0.
 
 ---
 
 ### DASH-02 — Double annotations in saved HTML
-**Status:** Fixed  
+
+**Status:** Fixed
 **File:** `dash_app.py` → `_download_html()`
 
 **Symptom:** Every phase line and point note appeared twice in the HTML file downloaded
@@ -54,7 +60,8 @@ The layout already contains all annotations from the most recent `_update_main` 
 ---
 
 ### DASH-03 — Point note arrow pointing to wrong position
-**Status:** Fixed  
+
+**Status:** Fixed
 **File:** `dash_app.py` → `_add_annotation()`, `_overlay_annotations()`
 
 **Symptom:** Point note annotations appeared at the top of the figure or at the wrong
@@ -64,18 +71,17 @@ subplot, not at the signal the user clicked.
 coordinates) instead of the actual signal value in axis coordinates.
 
 **Fix:**
-1. `_add_annotation` calls `_find_nearest_signal` to get `y_snapped` (signal value at
-   click x) and `group_idx`.
-2. `_yaxis_ref(group_idx)` computes the correct Plotly y-axis reference string
-   (`"y"` for group 0, `"y2"` for group 1, etc.).
+
+1. `_add_annotation` calls `_find_nearest_signal` to get `y_snapped` (signal value at click x) and `group_idx`.
+2. `_yaxis_ref(group_idx)` computes the correct Plotly y-axis reference string (`"y"` for group 0, `"y2"` for group 1, etc.).
 3. Both are stored in the annotation dict: `{"y": y_snapped, "yaxis": "y2", ...}`.
-4. `_overlay_annotations` uses `yref=ann["yaxis"]` so the arrow anchors to the
-   correct subplot axis.
+4. `_overlay_annotations` uses `yref=ann["yaxis"]` so the arrow anchors to the correct subplot axis.
 
 ---
 
 ### DASH-04 — `DuplicateCallback` on startup
-**Status:** Fixed  
+
+**Status:** Fixed
 **File:** `dash_app.py` — clientside callback registration
 
 **Symptom:** App crashed at import time with `dash.exceptions.DuplicateCallback`.
@@ -90,7 +96,8 @@ CSS + mousedown setup callback. This avoids any duplicate output conflict.
 ---
 
 ### DASH-05 — Wrong signal selected on click (z-order / SVG stacking)
-**Status:** Fixed by design  
+
+**Status:** Fixed by design
 **File:** `renderer_plotly.py` — `_draw_analog()`, `_draw_digital()`
 
 **Symptom** (in reference implementation): The last trace drawn in a subplot always
@@ -109,7 +116,8 @@ See [Dash Implementation Notes](dash-implementation.md) for the full callback ch
 ## Open
 
 ### DASH-06 — Smoothed signal y-snap ignores smoothed values
-**Status:** Open  
+
+**Status:** Open
 **File:** `dash_app.py` → `_add_annotation()`, `_find_nearest_signal()`
 
 **Symptom:** When the "Rolling Average" tool is active and the user places a point note,
@@ -125,11 +133,13 @@ inside `_build_main_figure` and is not accessible to the signal-resolver.
 ---
 
 ### DASH-07 — Console warning: `xaxis.matches: "x"` ignored to avoid infinite loop
-**Status:** Open / harmless  
+
+**Status:** Open / harmless
 **Affects:** Browser DevTools console only
 
 **Symptom:** Every time the main figure is rendered, the browser console shows:
-```
+
+```text
 WARN: ignored xaxis.matches: "x" to avoid an infinite loop
 ```
 
@@ -142,7 +152,8 @@ it without disabling the shared-axis behaviour.
 ---
 
 ### DASH-08 — No annotation persistence across browser sessions
-**Status:** Open / by design  
+
+**Status:** Open / by design
 **File:** `dash_app.py`
 
 Annotations are stored in `dcc.Store` (browser memory). Refreshing the page or
@@ -150,4 +161,31 @@ closing the tab loses all annotations. The "Save as HTML" button bakes them into
 the downloaded file, but there is no way to reload a previous session's annotations
 into a running Dash app.
 
-**Planned fix:** See [Roadmap — ROAD-03](roadmap.md#road-03--annotation-exportimport-as-json).
+**Planned fix:** See [ROAD-02](roadmap.md#road-02--annotation-json-export--import).
+
+---
+
+### DASH-09 — WebGL disabled in Dash mode (SVG rendering, ~15k point limit)
+
+**Status:** Open / known trade-off
+**File:** `dash_app.py` → `_build_main_figure(use_gl=False)`, `renderer_plotly.py` → `_draw_analog`
+
+**Symptom:** With large datasets (>15,000 samples per signal), the Dash app renders
+slowly and may freeze the browser tab. The static Plotly backend (`backend="plotly"`)
+does not have this problem.
+
+**Root cause:** Dash mode always calls `_build_main_figure(d, use_gl=False)`, which
+forces every signal trace to use `go.Scatter` (CPU/SVG rendering) instead of
+`go.Scattergl` (WebGL/GPU). This is intentional: `go.Scattergl` does not populate
+`bbox` in `clickData`, which is required for the two-step signal click detection
+algorithm. Switching back to `go.Scattergl` would break point-note placement and
+delta-cursor on multi-signal subplots.
+
+**Impact:** SVG rendering caps out at roughly 15,000 data points per trace before
+frame rate degrades noticeably. A typical 60-second CAN log at 1 kHz has 60,000 points
+per signal — four times the limit.
+
+**Planned fixes:**
+
+- [ROAD-20](roadmap.md#road-20--plotly-resampler-dynamic-downsampling) — integrate plotly-resampler to send only ~2,000 display points per viewport
+- [ROAD-22](roadmap.md#road-22--re-enable-webgl-in-dash-mode) — embed signal identity in `customdata` so `go.Scattergl` click detection works without `bbox`; removes the invisible-marker and `mousedown` machinery entirely

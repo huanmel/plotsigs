@@ -599,7 +599,8 @@ See [`examples/ex_batch.py`](examples/ex_batch.py) for a complete runner.
 
 ## Examples
 
-See **[EXAMPLES.md](EXAMPLES.md)** for the full catalog with rendered output images.
+See **[docs/examples-gallery.md](docs/examples-gallery.md)** for the full catalog with rendered output images.
+For the interactive Plotly/Dash backend see **[docs/examples.md](docs/examples.md)**.
 
 | File | Demonstrates |
 | --- | --- |
@@ -630,16 +631,24 @@ python examples/ex_plot_control_transient.py
 ```text
 plotsigs/
 ├── plotsigs/
-│   ├── __init__.py      # public API re-exports
-│   ├── diagram.py       # Diagram + SignalGroup — fluent builder API
-│   ├── signals.py       # Signal classes (evaluated lazily at render time)
-│   ├── annotations.py   # Annotation dataclasses — pure data, no matplotlib
-│   ├── analysis.py      # Pure-numpy step-response and event-detection functions
-│   ├── renderer.py      # All matplotlib drawing logic
-│   ├── loader.py        # YAML → Diagram loader
-│   ├── quickplot.py     # plot_signals() one-liner API
-│   └── style.py         # Visual constants / theme defaults
-├── examples/            # Runnable examples (see table above)
+│   ├── __init__.py         # public API re-exports
+│   ├── diagram.py          # Diagram + SignalGroup — fluent builder API
+│   ├── signals.py          # Signal classes (evaluated lazily at render time)
+│   ├── annotations.py      # Annotation dataclasses — pure data, no matplotlib
+│   ├── analysis.py         # Pure-numpy step-response and event-detection functions
+│   ├── renderer.py         # All matplotlib drawing logic
+│   ├── renderer_plotly.py  # Plotly figure builder (interactive HTML)
+│   ├── dash_app.py         # Full Dash application (browser app)
+│   ├── loader.py           # YAML → Diagram loader
+│   ├── quickplot.py        # plot_signals() one-liner API
+│   └── style.py            # Visual constants / theme defaults
+├── docs/
+│   ├── index.md            # Documentation home
+│   ├── examples.md         # Script + data file reference
+│   ├── issues.md           # Bug log (fixed and open)
+│   ├── roadmap.md          # Planned features
+│   └── dash-implementation.md  # Plotly/Dash internals and quirks
+├── examples/               # Runnable examples (see table above)
 ├── tests/
 │   └── test_signals.py
 ├── pyproject.toml
