@@ -1,12 +1,6 @@
 {
-  "permissions": {
-    "allow": [
-      "PowerShell($env:MPLBACKEND = \"Agg\"; cd C:\\\\D\\\\proj\\\\gh\\\\plotsigs; C:\\\\Users\\\\ivanm\\\\miniforge3\\\\envs\\\\control\\\\python.exe examples/ex_render_spec.py 2>&1)",
-      "PowerShell(C:\\\\Users\\\\ivanm\\\\miniforge3\\\\envs\\\\control\\\\python.exe -m pip install \"plotly>=5.18\" \"dash>=2.14\" -q 2>&1)",
-      "PowerShell(cd C:\\\\D\\\\proj\\\\gh\\\\plotsigs; $env:MPLBACKEND=\"Agg\"; C:\\\\Users\\\\ivanm\\\\miniforge3\\\\envs\\\\control\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 10)",
-      "PowerShell(C:\\\\Users\\\\ivanm\\\\miniforge3\\\\envs\\\\control\\\\python.exe -m pip install \"plotly>=5.18\" \"dash>=2.14\" --timeout 120 -q 2>&1)",
-      "PowerShell(cd C:\\\\D\\\\proj\\\\gh\\\\plotsigs; $env:MPLBACKEND=\"Agg\"; C:\\\\Users\\\\ivanm\\\\miniforge3\\\\envs\\\\control\\\\python.exe examples/ex_render_spec_plotly.py 2>&1)",
-      "PowerShell(cd C:\\\\D\\\\proj\\\\gh\\\\plotsigs; $env:MPLBACKEND=\"Agg\"; C:\\\\Users\\\\ivanm\\\\miniforge3\\\\envs\\\\control\\\\python.exe -m pytest tests/ -q 2>&1)"
-    ]
-  }
+  "allowedTools": [
+    "PowerShell(*pytest*)",
+    "PowerShell(*python.exe*)"
+  ]
 }

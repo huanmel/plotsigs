@@ -108,6 +108,44 @@ def test_find_nearest_digital_lower_lane(minimal_diagram, active_groups,
     assert y_snap == pytest.approx(0.9, abs=0.05)
 
 
+# ── ROAD-21: legend-store entries (basis for clientside visibility callback) ──
+
+def test_legend_entries_cover_all_signals(trace_meta, minimal_diagram):
+    """legend_entries must have one entry per signal trace with correct idx."""
+    active = [g for g in minimal_diagram._groups if g.signals]
+    entries = []
+    for tidx, meta in enumerate(trace_meta):
+        if meta["is_signal"]:
+            grp = active[meta["group_idx"]]
+            sig_obj = next((s for s in grp.signals if s.name == meta["sig_name"]), None)
+            if sig_obj:
+                entries.append({"idx": tidx, "name": sig_obj.label or sig_obj.name})
+
+    assert len(entries) == 4
+    assert [e["idx"] for e in entries] == [0, 1, 2, 3]
+    assert [e["name"] for e in entries] == [
+        "SetSpeed", "RunSpeed", "IsEnabled", "IsActVld"
+    ]
+
+
+def test_legend_entries_exclude_fill_traces(trace_meta, minimal_diagram):
+    """Fill traces (is_signal=False) must not appear in legend entries."""
+    active = [g for g in minimal_diagram._groups if g.signals]
+    entries = []
+    for tidx, meta in enumerate(trace_meta):
+        if meta["is_signal"]:
+            grp = active[meta["group_idx"]]
+            sig_obj = next((s for s in grp.signals if s.name == meta["sig_name"]), None)
+            if sig_obj:
+                entries.append(tidx)
+
+    fill_idxs = [i for i, m in enumerate(trace_meta) if not m["is_signal"]]
+    for fidx in fill_idxs:
+        assert fidx not in entries, f"Fill trace {fidx} should not be in legend entries"
+
+
+# ── _find_nearest_signal — digital group (DASH-01 regression) ────────────────
+
 def test_find_nearest_digital_ambiguous_picks_nearest(minimal_diagram,
                                                        active_groups,
                                                        plotly_figure,

@@ -377,6 +377,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         dcc.Store(id="cursor-store",      data={"c1": None, "c2": None}),
         dcc.Store(id="cursor-y-store",    data=None),
         dcc.Store(id="annotations-store", data=[]),
+        dcc.Store(id="legend-store",      data=legend_entries),
         dcc.Download(id="download-html"),
         html.Div(id="_css-dummy", style={"display": "none"}),
 
@@ -817,17 +818,23 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     # ══════════════════════════════════════════════════════════════════════════
     # Callback 4: signal visibility toggle (Patch — no full rebuild needed)
     # ══════════════════════════════════════════════════════════════════════════
-    @app.callback(
+    app.clientside_callback(
+        """
+        function(checked_vals, figure, legend) {
+            if (!figure || !legend) return window.dash_clientside.no_update;
+            var p = JSON.parse(JSON.stringify(figure));
+            legend.forEach(function(e) {
+                p.data[e.idx].visible = checked_vals.indexOf(String(e.idx)) !== -1;
+            });
+            return p;
+        }
+        """,
         Output("main-graph", "figure", allow_duplicate=True),
         Input("signal-visibility", "value"),
+        State("main-graph", "figure"),
+        State("legend-store", "data"),
         prevent_initial_call=True,
     )
-    def _toggle_visibility(visible_vals):
-        visible_set = set(visible_vals or [])
-        p = Patch()
-        for entry in legend_entries:
-            p["data"][entry["idx"]]["visible"] = str(entry["idx"]) in visible_set
-        return p
 
     # ══════════════════════════════════════════════════════════════════════════
     # Callback 5: add annotation / clear all → update store only
