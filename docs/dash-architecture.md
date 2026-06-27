@@ -32,13 +32,141 @@ remain in Python process memory for the lifetime of the server.
 **What we use:** NumPy arrays directly. Pandas is acceptable for file loading;
 signal data is converted to NumPy before the Dash app starts.
 
-**What we don't use:** Polars, PyArrow lazy frames, memory-mapped files, Redis.
+**What we don't use now:** Polars, PyArrow lazy frames, memory-mapped files, Redis.
 These solve GB-scale problems. At MB scale, a NumPy array accessed directly in
 a callback is faster than any lazy-loading indirection.
 
 **Rule:** Signal data never passes through a `dcc.Store`. Stores hold only UI
 state — annotation dicts, tool selection, cursor positions, zoom range. Data
 stays in the Python object.
+
+**Migration path to GB-scale (if needed):**
+
+`Signal.evaluate(t)` is the isolation point. Everything downstream receives a
+`np.ndarray` from that call and never needs to know about internal storage.
+
+- **Level 1 — Accept Polars input, evaluate to NumPy** (low-GB scale, easy):
+  Add a `pl.Series` / `pl.DataFrame` branch inside `evaluate()` that calls
+  `.to_numpy()`. Input parsing in `render_spec()` accepts `pl.DataFrame`
+  alongside `pd.DataFrame`. No Dash callback or renderer code changes.
+  Effort: hours.
+
+- **Level 2 — Lazy range evaluation, zero-copy** (multi-GB, hard):
+  Requires changing `evaluate(t)` to `evaluate(t_start, t_end)` — this
+  signature change propagates to the renderer and every callback. plotly-resampler
+  (ROAD-20) becomes a prerequisite: its `hf_x`/`hf_y` parameters accept PyArrow
+  `ChunkedArray` directly, so the resampler handles viewport slicing without
+  materialising the full array. Effort: significant refactor.
+
+The "signal data never in `dcc.Store`" rule above keeps the door open for both levels.
+Do not pass full arrays through stores or serialise them to the browser.
+
+---
+
+### Data size limits and what to do when you hit them
+
+The simple NumPy approach has well-defined limits. Knowing them in advance means
+you can preprocess the data before creating the `Diagram` rather than hitting them
+unexpectedly at runtime.
+
+#### Practical limits
+
+| Limit | Threshold | Symptom |
+| --- | --- | --- |
+| Points per signal (WebGL) | ~500k | Browser frame rate drops on pan/zoom |
+| Points per signal (JSON serialisation) | ~50k | Slow initial page load (each 50k float64 signal ≈ 2–4 MB of JSON) |
+| Total signals × points | ~5M | Figure serialisation takes several seconds |
+| RAM for NumPy arrays | ~500 MB | Python process memory pressure; OS starts paging |
+| Callback figure rebuild | ~20 signals × 50k pts | Tool-change latency exceeds 1 s |
+
+Typical plotsigs use case — 10–50 signals, 10k–100k points each — sits comfortably
+inside these limits. A 60-second CAN log at 1 kHz with 50 signals is 3M points total
+(~24 MB NumPy, ~150 MB JSON). A 10-minute log at 1 kHz hits the JSON limit.
+
+#### Preprocessing strategies
+
+These are all pure NumPy — no new dependencies required.
+
+#### 1. Slice to the time window of interest
+
+The single most effective intervention. If you only need to inspect 30 s of a 10-minute
+log, slice before loading:
+
+```python
+mask = (df["time"] >= t_start) & (df["time"] <= t_end)
+df_slice = df[mask].reset_index(drop=True)
+```
+
+Reduces points linearly. Do this first before any other preprocessing.
+
+#### 2. Min-max decimation (preserves peaks)
+
+Decimates to `n_out` points while keeping the signal envelope visible. For each
+window of `k` points, keeps the min and the max — never misses a spike.
+
+```python
+def minmax_decimate(t, y, n_out=5000):
+    n = len(y)
+    if n <= n_out:
+        return t, y
+    k = n // (n_out // 2)          # window size
+    m = (n // k) * k               # trim to full windows
+    y_w = y[:m].reshape(-1, k)
+    t_w = t[:m].reshape(-1, k)
+    i_min = y_w.argmin(axis=1)
+    i_max = y_w.argmax(axis=1)
+    rows = np.arange(len(y_w))
+    # interleave min/max in time order
+    pairs = np.stack([
+        np.where(i_min < i_max, i_min, i_max),
+        np.where(i_min < i_max, i_max, i_min),
+    ], axis=1).ravel()
+    idx = (rows.repeat(2) * k + pairs)
+    return t[idx], y[idx]
+```
+
+Use this on any signal that exceeds 50k points before passing to `Diagram`.
+Produces at most `n_out` points; for typical control signals the result is
+visually identical to the raw data.
+
+#### 3. Uniform decimation (for smooth signals)
+
+Simpler than min-max, acceptable when the signal has no sharp transients:
+
+```python
+step = max(1, len(t) // n_out)
+t_d, y_d = t[::step], y[::step]
+```
+
+Risks missing brief spikes. Use only when you know the signal is smooth (e.g. a
+slowly varying temperature or setpoint).
+
+#### 4. Float32 instead of float64
+
+Halves memory and JSON payload. Sufficient for any sensor with less than
+7 significant digits of precision (ADC data, filtered values, setpoints):
+
+```python
+df = df.astype({col: "float32" for col in signal_columns})
+```
+
+Combine with min-max decimation for maximum effect.
+
+#### 5. Select only the signals you need
+
+The `groups` key in `render_spec()` already limits which columns are loaded.
+Do not load all 500 columns of a CAN database — list only the signals in your
+`groups` spec. The Diagram never sees unselected columns.
+
+#### Recommended preprocessing order
+
+1. Slice time window
+2. Select columns (only signals in your groups spec)
+3. Cast to float32
+4. Apply min-max decimation per signal if > 50k points
+
+These four steps together can reduce a problematic dataset to well within limits
+without any new dependencies and without changing the `Diagram` / `render_spec` API.
 
 ---
 

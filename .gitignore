@@ -25,6 +25,9 @@ htmlcov/
 .idea/
 *.swp
 
+# Claude Code — local user settings (machine-specific paths, personal tool allowlists)
+.claude/settings.local.json
+
 # Virtual envs
 .venv/
 venv/

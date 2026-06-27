@@ -13,6 +13,8 @@ Fluent Python API, matplotlib + interactive Plotly/Dash backends.
 | [Examples reference](examples.md) | Script + data file catalog, Plotly/Dash tool guide |
 | [Roadmap](roadmap.md) | Planned features and known gaps |
 | [Known Issues](issues.md) | Bug log — fixed and open |
+| [Implementation Plan](implementation-plan.md) | Current sprint — 5 items in order, with specific code steps |
+| [Test Strategy](test-strategy.md) | Automated test layers, shared fixture, what we don't test and why |
 | [Dash Architecture](dash-architecture.md) | Target architecture, design decisions, migration path |
 | [Dash Implementation Notes](dash-implementation.md) | Click detection, annotation architecture, Plotly quirks |
 
