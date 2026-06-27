@@ -2,10 +2,9 @@
 Callback unit tests — call dash_app functions directly with synthetic inputs.
 No Dash server, no browser required.
 
-ROAD-22 note: _find_nearest_signal tests use the current pre-ROAD-22 signature:
-  (x_click, y_cursor, curve_number, t, active, trace_meta)
-After ROAD-22 the signature will change to (click_point, t, active) and these
-tests will be rewritten here alongside the production change.
+_find_nearest_signal uses the ROAD-22 customdata signature:
+  (click_point, t, active)
+where click_point is a dict with 'x', optional 'y', and 'customdata': [sig_name, group_idx].
 """
 
 import numpy as np
@@ -29,65 +28,50 @@ def test_yaxis_ref_group_3():
     assert _yaxis_ref(3) == "y4"
 
 
-# ── _find_nearest_signal — analog group ──────────────────────────────────────
+# ── _find_nearest_signal — ROAD-22 customdata routing ────────────────────────
 
-def test_find_nearest_analog_snaps_to_signal_value(minimal_diagram, active_groups,
-                                                    plotly_figure, trace_meta):
-    """At t=3 (SetSpeed=1000), y-snap should equal the signal value."""
+def test_find_nearest_analog_routes_via_customdata(minimal_diagram, active_groups):
+    """customdata [sig_name, group_idx] routes directly to the correct signal."""
     from plotsigs.dash_app import _find_nearest_signal
     t = minimal_diagram.t
-    sig, y_snap, group_idx = _find_nearest_signal(
-        x_click=3.0, y_cursor=1000.0, curve_number=0,
-        t=t, active=active_groups, trace_meta=trace_meta,
-    )
+    click_point = {"x": 3.0, "customdata": ["SetSpeed", 0]}
+    sig, y_snap, group_idx = _find_nearest_signal(click_point, t, active_groups)
     assert sig.name == "SetSpeed"
     assert group_idx == 0
-    assert y_snap == pytest.approx(1000.0, abs=1)
+    assert y_snap == pytest.approx(1000.0, abs=1)  # SetSpeed=1000 at t=3
 
 
-def test_find_nearest_analog_y_cursor_picks_closer_signal(minimal_diagram,
-                                                           active_groups,
-                                                           plotly_figure,
-                                                           trace_meta):
-    """y_cursor=850 (between 800 and 1000) is closer to RunSpeed=800."""
+def test_find_nearest_analog_routes_second_signal(minimal_diagram, active_groups):
+    """customdata routes to RunSpeed regardless of which signal has closer y."""
     from plotsigs.dash_app import _find_nearest_signal
     t = minimal_diagram.t
-    sig, y_snap, group_idx = _find_nearest_signal(
-        x_click=3.0, y_cursor=850.0, curve_number=0,
-        t=t, active=active_groups, trace_meta=trace_meta,
-    )
+    click_point = {"x": 3.0, "customdata": ["RunSpeed", 0]}
+    sig, y_snap, group_idx = _find_nearest_signal(click_point, t, active_groups)
     assert sig.name == "RunSpeed"
-    assert y_snap == pytest.approx(800.0, abs=1)
+    assert y_snap == pytest.approx(800.0, abs=1)  # RunSpeed=800 at t=3
 
 
-def test_find_nearest_analog_after_second_step(minimal_diagram, active_groups,
-                                               plotly_figure, trace_meta):
-    """At t=7 (after step at t=6), SetSpeed=500."""
+def test_find_nearest_analog_after_step(minimal_diagram, active_groups):
+    """At t=7, SetSpeed=500 after the step at t=6."""
     from plotsigs.dash_app import _find_nearest_signal
     t = minimal_diagram.t
-    sig, y_snap, group_idx = _find_nearest_signal(
-        x_click=7.0, y_cursor=500.0, curve_number=0,
-        t=t, active=active_groups, trace_meta=trace_meta,
-    )
+    click_point = {"x": 7.0, "customdata": ["SetSpeed", 0]}
+    sig, y_snap, _ = _find_nearest_signal(click_point, t, active_groups)
     assert sig.name == "SetSpeed"
     assert y_snap == pytest.approx(500.0, abs=1)
 
 
 # ── _find_nearest_signal — digital group (DASH-01 regression) ────────────────
 
-def test_find_nearest_digital_upper_lane(minimal_diagram, active_groups,
-                                         plotly_figure, trace_meta):
+def test_find_nearest_digital_upper_lane(minimal_diagram, active_groups):
     """
-    DASH-01 regression: clicking near IsActVld (lane 1, display_y=2.3)
-    must select IsActVld, not IsEnabled (lane 0, display_y=0.9).
+    DASH-01 regression: customdata ["IsActVld", 1] must select IsActVld at
+    display_y = 1*0.9 + 1*1.4 = 2.3, not IsEnabled at 0.9.
     """
     from plotsigs.dash_app import _find_nearest_signal
     t = minimal_diagram.t
-    # At t=5: IsEnabled=1→display_y=0.9, IsActVld=1→display_y=2.3
-    sig, y_snap, group_idx = _find_nearest_signal(
-        x_click=5.0, y_cursor=2.3, curve_number=3,  # curve 3 = IsActVld
-        t=t, active=active_groups, trace_meta=trace_meta,
-    )
+    click_point = {"x": 5.0, "customdata": ["IsActVld", 1]}
+    sig, y_snap, group_idx = _find_nearest_signal(click_point, t, active_groups)
     assert sig.name == "IsActVld", (
         f"Expected IsActVld but got {sig.name} — DASH-01 regression"
     )
@@ -95,15 +79,12 @@ def test_find_nearest_digital_upper_lane(minimal_diagram, active_groups,
     assert y_snap == pytest.approx(2.3, abs=0.05)
 
 
-def test_find_nearest_digital_lower_lane(minimal_diagram, active_groups,
-                                         plotly_figure, trace_meta):
-    """Clicking near IsEnabled (lane 0, display_y=0.9) selects IsEnabled."""
+def test_find_nearest_digital_lower_lane(minimal_diagram, active_groups):
+    """customdata ["IsEnabled", 1] selects IsEnabled at display_y=0.9."""
     from plotsigs.dash_app import _find_nearest_signal
     t = minimal_diagram.t
-    sig, y_snap, group_idx = _find_nearest_signal(
-        x_click=5.0, y_cursor=0.9, curve_number=2,  # curve 2 = IsEnabled
-        t=t, active=active_groups, trace_meta=trace_meta,
-    )
+    click_point = {"x": 5.0, "customdata": ["IsEnabled", 1]}
+    sig, y_snap, group_idx = _find_nearest_signal(click_point, t, active_groups)
     assert sig.name == "IsEnabled"
     assert y_snap == pytest.approx(0.9, abs=0.05)
 
@@ -144,19 +125,12 @@ def test_legend_entries_exclude_fill_traces(trace_meta, minimal_diagram):
         assert fidx not in entries, f"Fill trace {fidx} should not be in legend entries"
 
 
-# ── _find_nearest_signal — digital group (DASH-01 regression) ────────────────
-
-def test_find_nearest_digital_ambiguous_picks_nearest(minimal_diagram,
-                                                       active_groups,
-                                                       plotly_figure,
-                                                       trace_meta):
-    """y_cursor=1.6 (midpoint 0.9 and 2.3) is equidistant — picks lower lane
-    (IsEnabled) since it is first in the iteration when distances tie."""
+def test_find_nearest_fallback_no_customdata(minimal_diagram, active_groups):
+    """When customdata is absent, falls back to first signal in group 0."""
     from plotsigs.dash_app import _find_nearest_signal
     t = minimal_diagram.t
-    sig, _, _ = _find_nearest_signal(
-        x_click=5.0, y_cursor=1.6, curve_number=2,
-        t=t, active=active_groups, trace_meta=trace_meta,
-    )
-    # At exact midpoint the first signal wins the tie; document that behaviour.
-    assert sig.name in ("IsEnabled", "IsActVld")
+    click_point = {"x": 3.0}  # no customdata key
+    sig, y_snap, group_idx = _find_nearest_signal(click_point, t, active_groups)
+    assert sig is not None
+    assert group_idx == 0
+    assert sig.name == active_groups[0].signals[0].name

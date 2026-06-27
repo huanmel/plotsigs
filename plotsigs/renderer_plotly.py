@@ -506,14 +506,12 @@ def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
     # ── Signals ───────────────────────────────────────────────────────────────
     import plotly.graph_objects as go
 
-    # When use_gl=False (Dash mode) add tiny invisible markers so bbox is
-    # available in clickData for signal click detection.
-    _marker_kw = dict(marker=dict(size=8, opacity=0.01, maxdisplayed=500)) if not use_gl else {}
-    _mode_lines = "lines+markers" if not use_gl else "lines"
+    group_idx = row - 1
 
     enum_sig = None
     for sig in grp.signals:
         v = vals[sig.name]
+        _cd = [[sig.name, group_idx]] * len(t)
 
         if isinstance(sig, EnumeratedSignal):
             enum_sig = sig
@@ -529,20 +527,20 @@ def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
                               line_color="lightgray", line_width=0.5, opacity=0.8)
             fig.add_trace(go.Scatter(
                 x=t, y=v,
-                mode=_mode_lines,
+                mode="lines",
                 line=dict(color=sig.color, width=sig.lw, shape="hv"),
                 name=sig.label,
                 legendgroup=sig.name,
-                **_marker_kw,
+                customdata=_cd,
             ), row=row, col=1)
 
         elif isinstance(sig, SteppedSignal):
             fig.add_trace(go.Scatter(
                 x=t, y=v,
-                mode=_mode_lines,
+                mode="lines",
                 line=dict(color=sig.color, width=sig.lw, shape="hv"),
                 name=sig.label,
-                **_marker_kw,
+                customdata=_cd,
             ), row=row, col=1)
 
         else:
@@ -553,10 +551,10 @@ def _draw_analog(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
                 line_kw["dash"] = _LS_MAP.get(ls, "solid")
             fig.add_trace(TraceClass(
                 x=t, y=v,
-                mode=_mode_lines,
+                mode="lines",
                 line=line_kw,
                 name=sig.label,
-                **_marker_kw,
+                customdata=_cd,
             ), row=row, col=1)
 
     if enum_sig is not None:
@@ -599,18 +597,17 @@ def _draw_digital(grp: "SignalGroup", fig, t: np.ndarray, t_max: float,
     scale  = style.DIGITAL_SIGNAL_SCALE
     ya = _ya(row)
 
-    _marker_kw = dict(marker=dict(size=8, opacity=0.01, maxdisplayed=500)) if not use_gl else {}
-    _mode_lines = "lines+markers" if not use_gl else "lines"
+    group_idx = row - 1
 
     for i, sig in enumerate(grp.signals):
         offset = i * lane_h
         v = sig.evaluate(t)
         fig.add_trace(go.Scatter(
             x=t, y=v * scale + offset,
-            mode=_mode_lines,
+            mode="lines",
             line=dict(color=sig.color, width=sig.lw, shape="hv"),
             name=sig.label,
-            **_marker_kw,
+            customdata=[[sig.name, group_idx]] * len(t),
         ), row=row, col=1)
         # lane separator
         fig.add_hline(y=offset, row=row, col=1,

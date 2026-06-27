@@ -1,6 +1,7 @@
 {
-  "allowedTools": [
-    "PowerShell(*pytest*)",
-    "PowerShell(*python.exe*)"
-  ]
+  "permissions": {
+    "allow": [
+      "PowerShell(C:\\Users\\ivanm\\miniforge3\\envs\\control\\python.exe *)"
+    ]
+  }
 }

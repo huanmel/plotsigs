@@ -69,69 +69,50 @@ def _classify_traces(fig, d: "Diagram") -> list[dict]:
     return meta
 
 
-def _find_nearest_signal(x_click, y_cursor, curve_number, t, active, trace_meta):
+def _find_nearest_signal(click_point, t, active):
     """
-    Two-step signal resolver.
+    Resolve clicked signal from clickData point using customdata.
 
-    Step 1: curve_number → group_idx via trace_meta (reliable even with z-order bias).
-    Step 2: within group, pick signal nearest to y_cursor in data coordinates.
+    Each signal trace carries customdata=[[sig.name, group_idx], ...] per point,
+    set by renderer_plotly._draw_analog / _draw_digital (ROAD-22).
 
     Returns (signal_obj, y_at_x, group_idx).
     """
-    if curve_number is None or curve_number >= len(trace_meta):
-        curve_number = 0
-
-    group_idx = 0
-    for i in range(min(curve_number + 1, len(trace_meta))):
-        if trace_meta[i]["group_idx"] is not None:
-            group_idx = trace_meta[i]["group_idx"]
+    cd = click_point.get("customdata") if isinstance(click_point, dict) else None
+    if cd and len(cd) >= 2:
+        sig_name = cd[0]
+        group_idx = int(cd[1])
+    else:
+        group_idx = 0
+        sig_name = None
 
     if group_idx >= len(active):
         group_idx = len(active) - 1
 
     grp = active[group_idx]
-    sigs = grp.signals
-    if not sigs:
+    if not grp.signals:
         return None, 0.0, group_idx
 
+    if sig_name:
+        sig = next((s for s in grp.signals if s.name == sig_name), None)
+    else:
+        sig = None
+    if sig is None:
+        sig = grp.signals[0]
+
+    x_click = float(click_point.get("x", 0.0))
     pos = int(np.argmin(np.abs(t - x_click)))
 
-    # Digital signals are plotted at display_y = raw * scale + lane_idx * lane_h.
-    # Compare and snap to display_y so the annotation arrow lands on the right lane.
     is_digital = grp.mode == "digital"
     if is_digital:
         from .style import DIGITAL_LANE_HEIGHT as _LH, DIGITAL_SIGNAL_SCALE as _SC
+        lane_idx = grp.signals.index(sig)
+        y_at = float(sig.evaluate(t)[pos]) * _SC + lane_idx * _LH
+    else:
+        y_at = float(sig.evaluate(t)[pos])
 
-    def _display_y(lane_idx: int, raw: float) -> float:
-        return raw * _SC + lane_idx * _LH if is_digital else raw
-
-    if y_cursor is not None:
-        best_sig = sigs[0]
-        best_y   = _display_y(0, float(sigs[0].evaluate(t)[pos]))
-        best_d   = abs(best_y - y_cursor)
-        for si, sig in enumerate(sigs[1:], 1):
-            disp_y = _display_y(si, float(sig.evaluate(t)[pos]))
-            d_val  = abs(disp_y - y_cursor)
-            if d_val < best_d:
-                best_d, best_sig, best_y = d_val, sig, disp_y
-        _log.debug(
-            "[find_nearest] curve=%d y_cursor=%.4g group=%d digital=%s → %s y=%.4g",
-            curve_number, y_cursor, group_idx, is_digital,
-            best_sig.label or best_sig.name, best_y,
-        )
-        return best_sig, best_y, group_idx
-
-    sig_count_before = sum(
-        1 for m in trace_meta[:curve_number]
-        if m["is_signal"] and m["group_idx"] == group_idx
-    )
-    sig_idx = min(sig_count_before, len(sigs) - 1)
-    sig = sigs[sig_idx]
-    y_at = _display_y(sig_idx, float(sig.evaluate(t)[pos]))
-    _log.debug(
-        "[find_nearest] curve=%d y_cursor=None group=%d digital=%s sig_idx=%d → %s y=%.4g",
-        curve_number, group_idx, is_digital, sig_idx, sig.label or sig.name, y_at,
-    )
+    _log.debug("[find_nearest] customdata=%s group=%d → %s y=%.4g",
+               cd, group_idx, sig.label or sig.name, y_at)
     return sig, y_at, group_idx
 
 
@@ -186,7 +167,7 @@ def _overlay_annotations(fig, annotations, n_rows: int) -> None:
             )
 
 
-def _build_main_figure(d, use_gl=False, tool=None,
+def _build_main_figure(d, use_gl=True, tool=None, ann_type=None,
                        sig_a_name=None, sig_b_name=None,
                        deriv_sig_name=None, deriv_window=11,
                        smooth_sig_name=None, smooth_window=11,
@@ -204,9 +185,14 @@ def _build_main_figure(d, use_gl=False, tool=None,
     n_rows = len(active)
     t = d.t
 
-    # Set figure height proportional to subplot count
+    # Set figure height and hovermode based on tool
     heights = [260 if g.mode == "analog" else 100 for g in active]
-    fig.update_layout(height=max(300, sum(heights) + 100))
+    # "closest" only when a specific trace click is needed (delta, or point annotation).
+    # Phase annotations (and all other tools) use "x unified" so any x-click fires clickData.
+    hovermode = "closest" if (
+        tool == "delta" or (tool == "annotate" and ann_type == "point")
+    ) else "x unified"
+    fig.update_layout(height=max(300, sum(heights) + 100), hovermode=hovermode)
 
     def _get_sig(name):
         for grp in active:
@@ -316,7 +302,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     n_rows = len(active)
 
     # ── Trace metadata & legend entries ───────────────────────────────────────
-    _base_fig = _build_figure(d, use_gl=False)
+    _base_fig = _build_figure(d)
     trace_meta = _classify_traces(_base_fig, d)
 
     legend_entries: list[dict] = []
@@ -337,7 +323,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     sig_options = [{"label": s, "value": s} for s in all_sig_names]
 
     # Build initial figure
-    initial_fig = _build_main_figure(d, use_gl=False)
+    initial_fig = _build_main_figure(d)
 
     # ── Shared styles ─────────────────────────────────────────────────────────
     _sticky_pane = {
@@ -375,7 +361,6 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     app.layout = html.Div([
         # Stores & download
         dcc.Store(id="cursor-store",      data={"c1": None, "c2": None}),
-        dcc.Store(id="cursor-y-store",    data=None),
         dcc.Store(id="annotations-store", data=[]),
         dcc.Store(id="legend-store",      data=legend_entries),
         dcc.Download(id="download-html"),
@@ -596,7 +581,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     ], style={"display": "flex", "flexDirection": "row", "alignItems": "flex-start"})
 
     # ══════════════════════════════════════════════════════════════════════════
-    # CSS injection + mousedown listener
+    # CSS injection
     # ══════════════════════════════════════════════════════════════════════════
     app.clientside_callback(
         """
@@ -614,50 +599,11 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
                 '#main-graph .modebar-group { margin: 0 !important; }',
             ].join(' ');
             document.head.appendChild(s);
-            document.addEventListener('mousedown', function(e) {
-                window._psig_mousedown_y = e.clientY;
-            }, {passive: true});
             return '';
         }
         """,
         Output("_css-dummy", "children"),
         Input("_css-dummy", "id"),
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Clientside: clickData → find nearest point by bbox → cursor-y-store
-    # ══════════════════════════════════════════════════════════════════════════
-    app.clientside_callback(
-        """
-        function(clickData) {
-            if (!clickData || !clickData.points) return window.dash_clientside.no_update;
-            var clientY = window._psig_mousedown_y;
-            if (clientY === undefined || clientY === null) {
-                console.log('[psig cursor-y] no mousedown_y captured — fallback to pt[0]');
-                return {y: clickData.points[0].y, curveNumber: clickData.points[0].curveNumber};
-            }
-            var scrollY = window.scrollY || document.documentElement.scrollTop || 0;
-            var absY = clientY + scrollY;
-            var pts = clickData.points;
-            var bestPt = pts[0];
-            var bestDist = Infinity;
-            for (var i = 0; i < pts.length; i++) {
-                var pt = pts[i];
-                if (!pt.bbox) continue;
-                var markerY = (pt.bbox.y0 + pt.bbox.y1) / 2;
-                var dist = Math.abs(markerY - absY);
-                console.log('[psig cursor-y] curve=' + pt.curveNumber +
-                    ' y=' + pt.y + ' bbox.y0=' + pt.bbox.y0.toFixed(0) +
-                    ' dist=' + dist.toFixed(0));
-                if (dist < bestDist) { bestDist = dist; bestPt = pt; }
-            }
-            console.log('[psig cursor-y] BEST curve=' + bestPt.curveNumber +
-                ' y=' + bestPt.y + ' dist=' + bestDist.toFixed(0));
-            return {y: bestPt.y, curveNumber: bestPt.curveNumber};
-        }
-        """,
-        Output("cursor-y-store", "data"),
-        Input("main-graph", "clickData"),
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -720,6 +666,22 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         return "Type note, then click anywhere on the plot."
 
     # ══════════════════════════════════════════════════════════════════════════
+    # Callback 1c: ann-type change → patch hovermode without full rebuild
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("main-graph", "figure", allow_duplicate=True),
+        Input("ann-type", "value"),
+        State("tool-select", "value"),
+        prevent_initial_call=True,
+    )
+    def _patch_ann_hovermode(ann_type, tool):
+        if tool != "annotate":
+            raise dash.exceptions.PreventUpdate
+        p = Patch()
+        p["layout"]["hovermode"] = "closest" if ann_type == "point" else "x unified"
+        return p
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Callback 2: update MAIN graph (tool + signals + window + annotations)
     # ══════════════════════════════════════════════════════════════════════════
     @app.callback(
@@ -733,14 +695,16 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         Input("smooth-window",       "value"),
         Input("annotations-store",   "data"),
         State("signal-visibility",   "value"),
+        State("ann-type",            "value"),
         prevent_initial_call=True,
     )
     def _update_main(tool, sig_a, sig_b, deriv_sig, deriv_win,
-                     smooth_sig, smooth_win, stored_anns, visible_vals):
+                     smooth_sig, smooth_win, stored_anns, visible_vals, ann_type_val):
         visible_idxs = {int(v) for v in (visible_vals or [])}
         return _build_main_figure(
-            d, use_gl=False,
+            d,
             tool=tool,
+            ann_type=ann_type_val,
             sig_a_name=sig_a,
             sig_b_name=sig_b,
             deriv_sig_name=deriv_sig,
@@ -842,9 +806,8 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     # ══════════════════════════════════════════════════════════════════════════
     @app.callback(
         Output("annotations-store", "data"),
-        Input("cursor-y-store",  "data"),
+        Input("main-graph",      "clickData"),
         Input("ann-clear",       "n_clicks"),
-        State("main-graph",      "clickData"),
         State("tool-select",     "value"),
         State("ann-type",        "value"),
         State("ann-text",        "value"),
@@ -852,8 +815,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         State("annotations-store", "data"),
         prevent_initial_call=True,
     )
-    def _add_annotation(cursor_y_data, _clear, click_data, tool, ann_type,
-                        ann_text, ann_color, store):
+    def _add_annotation(click_data, _clear, tool, ann_type, ann_text, ann_color, store):
         if ctx.triggered_id == "ann-clear":
             return []
         if tool != "annotate":
@@ -862,23 +824,16 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
             raise dash.exceptions.PreventUpdate
 
         pt = click_data["points"][0]
-        x_clicked  = pt["x"]
-        y_cursor   = (cursor_y_data or {}).get("y")
-        curve_num  = (cursor_y_data or {}).get("curveNumber", pt.get("curveNumber", 0))
+        x_clicked = pt["x"]
         text = ann_text or "★"
         color = ann_color or "#d62728"
 
         if ann_type == "point":
-            sig_obj, y_snapped, group_idx = _find_nearest_signal(
-                x_clicked, y_cursor, curve_num, t, active, trace_meta
-            )
+            sig_obj, y_snapped, group_idx = _find_nearest_signal(pt, t, active)
             yaxis = _yaxis_ref(group_idx)
             sig_name = (sig_obj.label or sig_obj.name) if sig_obj else ""
-            _log.debug(
-                "[annotate] point sig=%s x=%.4f y_cursor=%s y_snap=%.4g curve=%d group=%d yaxis=%s",
-                sig_name, x_clicked, f"{y_cursor:.4g}" if y_cursor is not None else "None",
-                y_snapped, curve_num, group_idx, yaxis,
-            )
+            _log.debug("[annotate] point sig=%s x=%.4f y_snap=%.4g group=%d yaxis=%s",
+                       sig_name, x_clicked, y_snapped, group_idx, yaxis)
             entry = {
                 "type": "point",
                 "x": x_clicked,
@@ -900,16 +855,15 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     @app.callback(
         Output("cursor-store",  "data"),
         Output("cursor-signal", "value"),
-        Input("cursor-y-store", "data"),
+        Input("main-graph",     "clickData"),
         Input("cursor-reset",   "n_clicks"),
-        State("main-graph",     "clickData"),
         State("tool-select",    "value"),
         State("delta-auto",     "value"),
         State("cursor-signal",  "value"),
         State("cursor-store",   "data"),
         prevent_initial_call=True,
     )
-    def _set_cursor(cursor_y_data, _rst, click_data, tool, auto_mode, cursor_sig, store):
+    def _set_cursor(click_data, _rst, tool, auto_mode, cursor_sig, store):
         if ctx.triggered_id == "cursor-reset":
             return {"c1": None, "c2": None}, no_update
         if tool != "delta":
@@ -919,18 +873,12 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
 
         pt = click_data["points"][0]
         x_clicked = pt["x"]
-        y_cursor  = (cursor_y_data or {}).get("y")
-        curve_num = (cursor_y_data or {}).get("curveNumber", pt.get("curveNumber", 0))
-        _log.debug("[cursor] triggered=%s x=%.4f y_cursor=%s curve=%s auto=%s",
-                   ctx.triggered_id, x_clicked,
-                   f"{y_cursor:.4g}" if y_cursor is not None else "None",
-                   curve_num, auto_mode)
+        _log.debug("[cursor] triggered=%s x=%.4f auto=%s",
+                   ctx.triggered_id, x_clicked, auto_mode)
 
         use_auto = "auto" in (auto_mode or [])
         if use_auto:
-            sig_obj, y_val, _ = _find_nearest_signal(
-                x_clicked, y_cursor, curve_num, t, active, trace_meta
-            )
+            sig_obj, y_val, _ = _find_nearest_signal(pt, t, active)
             if sig_obj is None:
                 raise dash.exceptions.PreventUpdate
             sig_name = sig_obj.label or sig_obj.name
