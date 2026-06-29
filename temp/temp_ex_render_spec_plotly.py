@@ -104,7 +104,7 @@ spec = {
 }
 
 # ── Launch ────────────────────────────────────────────────────────────────────
-plotsigs.render_spec(spec, backend="dash")
+plotsigs.render_spec(spec, backend="dash", debug=True)
 
 # Static HTML export instead:
 # fig = plotsigs.render_spec(spec, backend="plotly",

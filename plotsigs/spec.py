@@ -110,6 +110,7 @@ def render_spec(
     show: bool = True,
     dpi: int = 150,
     backend: str = "matplotlib",
+    debug: bool = False,
 ):
     """
     Render a PlotSpec dict.
@@ -179,7 +180,7 @@ def render_spec(
     if backend == "plotly":
         return d.render_plotly(output=output, show=show)
     if backend == "dash":
-        return d.run_dash()
+        return d.run_dash(debug=debug)
     return d.render(output=output, show=show, dpi=dpi)
 
 

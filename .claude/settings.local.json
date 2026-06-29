@@ -7,7 +7,8 @@
       "PowerShell(tail -10)",
       "PowerShell(tail -5)",
       "Bash(python -c \"import dash_ag_grid; import os; print\\(os.path.dirname\\(dash_ag_grid.__file__\\)\\)\")",
-      "Bash(C:/Users/ivanm/miniforge3/envs/control/python.exe -c \"import dash_ag_grid, os; print\\(os.path.dirname\\(dash_ag_grid.__file__\\)\\)\")"
+      "Bash(C:/Users/ivanm/miniforge3/envs/control/python.exe -c \"import dash_ag_grid, os; print\\(os.path.dirname\\(dash_ag_grid.__file__\\)\\)\")",
+      "PowerShell(tail -3)"
     ]
   }
 }

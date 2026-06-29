@@ -373,7 +373,9 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         ) from exc
 
     # ── Debug logging: terminal + file ────────────────────────────────────────
-    _log_path = pathlib.Path(__file__).parent / "dash_debug.log"
+    _log_dir = pathlib.Path(__file__).parent.parent / "temp"
+    _log_dir.mkdir(exist_ok=True)
+    _log_path = _log_dir / "dash_debug.log"
     _fh = logging.FileHandler(_log_path, mode="w", encoding="utf-8")
     _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
     _log.handlers.clear()
@@ -494,7 +496,15 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     }
 
     # ── App ───────────────────────────────────────────────────────────────────
+    import flask as _flask
+
     app = Dash(__name__, suppress_callback_exceptions=True)
+
+    @app.server.route("/_log", methods=["POST"])
+    def _browser_log():
+        msg = _flask.request.get_data(as_text=True)
+        _log.info("[browser] %s", msg)
+        return "", 204
 
     app.layout = html.Div([
         # Stores & download
@@ -725,17 +735,13 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
                 columnDefs=[
                     {
                         "field": "color", "headerName": "", "width": 18,
-                        "cellStyle": {"function": "{'background': params.data.color}"},
+                        "cellStyle": {"function": "({'background': params.data.color})"},
                         "suppressHeaderMenuButton": True,
                         "suppressMovable": True,
                     },
                     {
                         "field": "label", "headerName": "Signal",
                         "flex": 2, "filter": True, "rowDrag": True,
-                        "cellStyle": {"function":
-                            "params.data._selected "
-                            "? {'background':'#d4e6f1','fontWeight':'bold'} "
-                            ": null"},
                     },
                     {"field": "panels", "headerName": "Panels", "flex": 2},
                     {"field": "type", "headerName": "T", "width": 34},
@@ -744,11 +750,17 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
                          for s in all_signals_ordered],
                 defaultColDef={"resizable": True, "sortable": True},
                 dashGridOptions={
+                    "rowSelection": {
+                        "mode": "multiRow",
+                        "checkboxes": True,
+                        "headerCheckbox": True,
+                    },
                     "rowHeight": 26,
                     "headerHeight": 26,
                     "getRowId": {"function": "params.data.name"},
                 },
-                eventListeners={"rowDragEnd": True, "rowClicked": True},  # type: ignore[arg-type]
+                # eventListeners not used — events are handled directly in assets/logger.js
+                # via dash_ag_grid.getApi().addEventListener() and dash_clientside.set_props
                 style={"flex": "1", "minHeight": "0"},
             ) if _AGGRID else html.Div(
                 "Install dash-ag-grid to enable the signal library.",
@@ -837,6 +849,8 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
                 '  background: #e3f2fd !important; }',
             ].join(' ');
             document.head.appendChild(s);
+
+            /* Console forwarding is handled by assets/logger.js (loaded earlier by Dash) */
 
             /* ── AG Grid row drag → panel zone hover tracking ── */
             window._agDragOverPanel = null;
@@ -930,12 +944,13 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     app.clientside_callback(
         """
         function(evData, layout) {
-            console.log('[plotsigs drag] evData type:', evData && evData.type,
-                        'hasNodes:', !!(evData && (evData.nodes || evData.node)));
-            if (!evData || evData.type !== 'rowDragEnd')
+            var ev = evData && evData.data;
+            console.log('[plotsigs drag] evData type:', ev && ev.type,
+                        'hasNodes:', !!(ev && (ev.nodes || ev.node)));
+            if (!ev || ev.type !== 'rowDragEnd')
                 return window.dash_clientside.no_update;
 
-            var nodes = evData.nodes || (evData.node ? [evData.node] : []);
+            var nodes = ev.nodes || (ev.node ? [ev.node] : []);
             var nd = nodes.length ? nodes[0] : null;
             var sigName = nd && ((nd.data && nd.data.name) || nd.name);
             console.log('[plotsigs drag] sigName:', sigName,
@@ -1003,24 +1018,27 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         prevent_initial_call=True,
     )
 
-    # rowClicked → ag-sel-store: toggle signal name in selection list
+    # selectionChanged → ag-sel-store: read selected rows via grid API
     app.clientside_callback(
         """
-        function(evData, current) {
-            if (!evData || evData.type !== 'rowClicked')
+        function(evData) {
+            var ev = evData && evData.data;
+            if (!ev || ev.type !== 'selectionChanged')
                 return window.dash_clientside.no_update;
-            var name = evData.data && evData.data.name;
-            if (!name) return window.dash_clientside.no_update;
-            var sel = Array.isArray(current) ? current.slice() : [];
-            var idx = sel.indexOf(name);
-            if (idx >= 0) sel.splice(idx, 1); else sel.push(name);
-            console.log('[plotsigs sel] toggle', name, '→', sel);
-            return sel;
+            try {
+                var api = dash_ag_grid.getApi('signal-library');
+                var rows = api ? api.getSelectedRows() : [];
+                var names = rows.map(function(r) { return r.name; });
+                console.log('[plotsigs sel] selected:', names);
+                return names;
+            } catch(e) {
+                console.error('[plotsigs sel] error:', e);
+                return [];
+            }
         }
         """,
         Output("ag-sel-store", "data"),
         Input("signal-library", "eventData"),
-        State("ag-sel-store", "data"),
         prevent_initial_call=True,
     )
 
@@ -1273,6 +1291,32 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     def _clear_selection_after_assign(_):
         return []
 
+    # Cache layout-store into window._plotsigsLayout so assets/logger.js can
+    # read the current layout when handling rowDragEnd via set_props.
+    app.clientside_callback(
+        """
+        function(layout) {
+            window._plotsigsLayout = layout;
+            var pending = window._plotsigsPendingAdd;
+            if (pending) {
+                window._plotsigsPendingAdd = null;
+                var sigName = pending.sigName, toPanel = pending.toPanel;
+                var newLayout = (layout || []).map(function(p) {
+                    if (p.ylabel !== toPanel) return p;
+                    if ((p.signals || []).indexOf(sigName) >= 0) return p;
+                    return Object.assign({}, p, { signals: p.signals.concat([sigName]) });
+                });
+                console.log('[plotsigs] pending add applied:', sigName, '->', toPanel);
+                return newLayout;
+            }
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("layout-store", "data", allow_duplicate=True),
+        Input("layout-store", "data"),
+        prevent_initial_call="initial_duplicate",
+    )
+
     # ══════════════════════════════════════════════════════════════════════════
     # ROAD-13/14: remove a signal from a panel via its [−] chip button
     # ══════════════════════════════════════════════════════════════════════════
@@ -1306,14 +1350,9 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     @app.callback(
         Output("signal-library", "rowData"),
         Input("layout-store", "data"),
-        Input("ag-sel-store", "data"),
     )
-    def _update_library_rows(layout_data, selected_names):
-        sel = set(selected_names or [])
-        rows = [_make_library_row(s, layout_data) for s in all_signals_ordered]
-        for r in rows:
-            r["_selected"] = r["name"] in sel
-        return rows
+    def _update_library_rows(layout_data):
+        return [_make_library_row(s, layout_data) for s in all_signals_ordered]
 
     # ══════════════════════════════════════════════════════════════════════════
     # ROAD-13/14: keep panel-target dropdown in sync with layout
