@@ -28,6 +28,13 @@ try:
 except ImportError:
     _RESAMPLER = False
 
+try:
+    import dash_ag_grid as dag
+    _AGGRID = True
+except ImportError:
+    dag = None  # type: ignore[assignment]
+    _AGGRID = False
+
 _RESAMPLE_THRESHOLD = 50_000  # points; above this, send only 2k samples to browser
 
 # Mutable ref to the latest FigureResampler so the zoom callback always queries the
@@ -74,7 +81,7 @@ def _classify_traces(fig, d: "Diagram") -> list[dict]:
             meta.append({"is_signal": False, "group_idx": None, "sig_name": None})
         elif sig_ptr < len(signal_order):
             gi, sig = signal_order[sig_ptr]
-            meta.append({"is_signal": True, "group_idx": gi, "sig_name": sig.name})
+            meta.append({"is_signal": True, "group_idx": gi, "sig_name": sig.name})  # type: ignore[union-attr]
             sig_ptr += 1
         else:
             meta.append({"is_signal": False, "group_idx": None, "sig_name": None})
@@ -184,12 +191,58 @@ def _overlay_annotations(fig, annotations, n_rows: int) -> None:
             )
 
 
+def _groups_from_layout(layout_store, signal_map):
+    """Build SimpleNamespace group objects from a layout-store list."""
+    from types import SimpleNamespace
+    groups = []
+    for panel in (layout_store or []):
+        sigs = [signal_map[n] for n in panel.get("signals", []) if n in signal_map]
+        if sigs:
+            groups.append(SimpleNamespace(
+                ylabel=panel.get("ylabel", ""),
+                mode=panel.get("mode", "analog"),
+                signals=sigs,
+                thresholds=[], tolerance_bands=[], pct_tolerance_bands=[],
+                comparisons=[], callouts=[], event_durations=[],
+            ))
+    return groups
+
+
+def _build_figure_from_layout(d, layout_store, use_gl=True, use_resampler=False):
+    """Build a Plotly figure using layout-store panel assignments instead of d._groups."""
+    import copy
+    from .renderer_plotly import _build_figure
+    d_tmp = copy.copy(d)
+    d_tmp._groups = _groups_from_layout(layout_store, d._signal_map)
+    return _build_figure(d_tmp, use_gl=use_gl, use_resampler=use_resampler)
+
+
+def _legend_from_fig(fig, signal_map):
+    """Extract legend entries [{idx, name, color}] from figure trace customdata."""
+    entries = []
+    for tidx, tr in enumerate(fig.data):
+        cd = getattr(tr, "customdata", None)
+        if cd is not None and len(cd) > 0:
+            row0 = cd[0]
+            if row0 is not None and len(row0) >= 2:
+                sig_name = row0[0]
+                sig_obj = signal_map.get(sig_name)
+                if sig_obj:
+                    entries.append({
+                        "idx": tidx,
+                        "name": sig_obj.label or sig_obj.name,
+                        "color": sig_obj.color,
+                    })
+    return entries
+
+
 def _build_main_figure(d, use_gl=True, tool=None, ann_type=None,
-                       use_resampler=False,
+                       use_resampler=False, cursor_store=None,
                        sig_a_name=None, sig_b_name=None,
                        deriv_sig_name=None, deriv_window=11,
                        smooth_sig_name=None, smooth_window=11,
-                       stored_annotations=None, visible_idxs=None):
+                       stored_annotations=None, visible_idxs=None,
+                       layout_store=None):
     """
     Build the complete main figure, applying:
       - analysis overlay (customdata in hover tooltip for diff/deriv)
@@ -198,8 +251,13 @@ def _build_main_figure(d, use_gl=True, tool=None, ann_type=None,
     """
     from .renderer_plotly import _build_figure
 
-    fig = _build_figure(d, use_gl=use_gl, use_resampler=use_resampler)
-    active = [g for g in d._groups if g.signals]
+    if layout_store:
+        fig = _build_figure_from_layout(d, layout_store, use_gl=use_gl,
+                                        use_resampler=use_resampler)
+        active = _groups_from_layout(layout_store, d._signal_map)
+    else:
+        fig = _build_figure(d, use_gl=use_gl, use_resampler=use_resampler)
+        active = [g for g in d._groups if g.signals]
     n_rows = len(active)
     t = d.t
 
@@ -270,6 +328,17 @@ def _build_main_figure(d, use_gl=True, tool=None, ann_type=None,
 
     # ── Overlay user annotations ───────────────────────────────────────────
     _overlay_annotations(fig, stored_annotations or [], n_rows)
+
+    # ── Delta cursor snap lines ────────────────────────────────────────────
+    if tool == "delta" and cursor_store:
+        c1 = cursor_store.get("c1")
+        c2 = cursor_store.get("c2")
+        if c1 is not None:
+            fig.add_vline(x=c1["x"],
+                          line=dict(color="#2196F3", dash="dash", width=1.5))
+        if c2 is not None:
+            fig.add_vline(x=c2["x"],
+                          line=dict(color="#FF9800", dash="dash", width=1.5))
 
     # ── Apply visibility ───────────────────────────────────────────────────
     if visible_idxs is not None:
@@ -345,6 +414,50 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     default_b = all_sig_names[1] if len(all_sig_names) > 1 else default_a
     sig_options = [{"label": s, "value": s} for s in all_sig_names]
 
+    # Layout-store: initial value mirrors d._groups
+    initial_layout_store = [
+        {"ylabel": grp.ylabel, "mode": grp.mode, "signals": [sig.name for sig in grp.signals]}
+        for grp in active
+    ]
+
+    # Ordered list of all signals (spec order, deduped) — used for rowData
+    _seen_sigs: set = set()
+    all_signals_ordered = []
+    for _grp in active:
+        for _sig in _grp.signals:
+            if _sig.name not in _seen_sigs:
+                all_signals_ordered.append(_sig)
+                _seen_sigs.add(_sig.name)
+
+    # Map signal name → type label ("A" / "D") from original spec grouping
+    _sig_type_map: dict = {}
+    for _grp in active:
+        _type_label = "D" if _grp.mode == "digital" else "A"
+        for _sig in _grp.signals:
+            _sig_type_map.setdefault(_sig.name, _type_label)
+
+    # Precompute per-signal min/max once so _update_library_rows stays fast
+    _sig_stats: dict[str, tuple[float, float]] = {}
+    for _s in all_signals_ordered:
+        _v = _s.evaluate(t)
+        _sig_stats[_s.name] = (float(np.min(_v)), float(np.max(_v)))
+
+    def _make_library_row(sig, layout_data):
+        """Build one rowData dict for the AG Grid signal library."""
+        panels_str = ", ".join(
+            p["ylabel"] for p in (layout_data or []) if sig.name in p.get("signals", [])
+        ) or "—"
+        mn, mx = _sig_stats.get(sig.name, (0.0, 0.0))
+        return {
+            "name":     sig.name,
+            "label":    sig.label or sig.name,
+            "color":    sig.color,
+            "panels":   panels_str,
+            "type":     _sig_type_map.get(sig.name, "A"),
+            "min_val":  mn,
+            "max_val":  mx,
+        }
+
     # Build initial figure
     initial_fig = _build_main_figure(d, use_resampler=use_resampler)
     if use_resampler:
@@ -357,7 +470,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
     }
     sidebar_style = {
         **_sticky_pane,
-        "width": "220px", "minWidth": "220px",
+        "width": "260px", "minWidth": "260px",
         "padding": "16px", "boxSizing": "border-box",
         "background": "#f8f9fa",
         "borderRight": "1px solid #dee2e6",
@@ -388,10 +501,28 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         dcc.Store(id="cursor-store",      data={"c1": None, "c2": None}),
         dcc.Store(id="annotations-store", data=[]),
         dcc.Store(id="legend-store",      data=legend_entries),
+        dcc.Store(id="layout-store",      data=initial_layout_store),
+        dcc.Store(id="ag-sel-store",      data=[]),
         dcc.Download(id="download-html"),
         html.Div(id="_css-dummy", style={"display": "none"}),
 
-        # ── LEFT: sticky sidebar ──────────────────────────────────────────────
+        # ── LEFT: collapsible sticky sidebar ─────────────────────────────────
+        # Collapse toggle tab — always visible
+        html.Div(
+            "◀",
+            id="sidebar-toggle",
+            n_clicks=0,
+            title="Collapse/expand sidebar",
+            style={
+                "position": "sticky", "top": "0", "zIndex": "200",
+                "writingMode": "vertical-lr", "cursor": "pointer",
+                "background": "#dee2e6", "color": "#495057",
+                "padding": "10px 4px", "fontSize": "13px",
+                "userSelect": "none", "flexShrink": "0",
+                "alignSelf": "flex-start",
+                "borderRight": "1px solid #ced4da",
+            },
+        ),
         html.Div([
             html.H4("Analysis", style={"margin": "0 0 12px", "fontSize": "14px"}),
             html.Label("Tool:", style=lbl),
@@ -512,54 +643,131 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
                 }),
             ]),
 
-            # Signal visibility (collapsible)
-            html.Hr(style={"margin": "14px 0 8px"}),
-            html.Button(
-                id="signals-toggle", n_clicks=0,
-                children=["Signals ", html.Span("▾", id="signals-arrow")],
-                style={
-                    "width": "100%", "textAlign": "left", "background": "none",
-                    "border": "none", "padding": "0 0 6px", "cursor": "pointer",
-                    "fontWeight": "bold", "fontSize": "12px", "color": "#212529",
-                },
-            ),
-            html.Div(id="signals-list", children=[
-                dcc.Checklist(
-                    id="signal-visibility",
-                    options=[
-                        {
-                            "label": html.Span([
-                                html.Span(style={
-                                    "display": "inline-block",
-                                    "width": "18px", "height": "3px",
-                                    "background": e["color"],
-                                    "borderRadius": "2px",
-                                    "marginRight": "5px",
-                                    "verticalAlign": "middle",
-                                }),
-                                html.Span(e["name"], style={
-                                    "fontSize": "11px",
-                                    "fontFamily": "monospace",
-                                    "verticalAlign": "middle",
-                                }),
-                            ]),
-                            "value": str(e["idx"]),
-                        }
-                        for e in legend_entries
-                    ],
-                    value=[str(e["idx"]) for e in legend_entries],
-                    labelStyle={"display": "flex", "alignItems": "center", "marginBottom": "3px"},
-                ),
-            ]),
+            # ── Panels section (collapsed by default) ────────────────────────
+            html.Hr(style={"margin": "14px 0 6px"}),
+            html.Div([
+                html.Div([
+                    html.Button(
+                        ["Panels ", html.Span("▸", id="panels-arrow")],
+                        id="panels-toggle",
+                        n_clicks=1,   # start collapsed
+                        style={
+                            "background": "none", "border": "none", "padding": "0",
+                            "cursor": "pointer", "fontWeight": "bold",
+                            "fontSize": "12px", "color": "#212529", "flex": "1",
+                            "textAlign": "left",
+                        },
+                    ),
+                    html.Button(
+                        "＋A", id="add-analog-btn", n_clicks=0,
+                        title="Add analog panel",
+                        style={
+                            "fontSize": "10px", "padding": "1px 5px", "cursor": "pointer",
+                            "background": "#2196F3", "color": "white",
+                            "border": "none", "borderRadius": "3px",
+                        },
+                    ),
+                    html.Button(
+                        "＋D", id="add-digital-btn", n_clicks=0,
+                        title="Add digital panel",
+                        style={
+                            "fontSize": "10px", "padding": "1px 5px", "cursor": "pointer",
+                            "background": "#4CAF50", "color": "white",
+                            "border": "none", "borderRadius": "3px",
+                        },
+                    ),
+                ], style={"display": "flex", "alignItems": "center", "gap": "4px",
+                          "marginBottom": "4px"}),
+                html.Div(id="panels-list", children=[], style={"display": "none"}),
+            ], id="panels-section"),
 
-            html.Hr(style={"margin": "12px 0", "borderColor": "#dee2e6"}),
+            html.Hr(style={"margin": "8px 0 6px", "borderColor": "#dee2e6"}),
             html.Button(
                 "💾 Save as HTML", id="save-html-btn", n_clicks=0,
-                style={**_btn, "background": "#495057", "color": "white"},
+                style={**_btn, "background": "#495057", "color": "white",
+                       "flexShrink": "0"},
             ),
-        ], style=sidebar_style),
 
-        # ── CENTRE: scrollable signal subplots ────────────────────────────────
+            # ── Signal library (fills remaining height) ───────────────────────
+            html.Hr(style={"margin": "8px 0 6px"}),
+            html.Div([
+                html.Span("Signals", style={
+                    "fontWeight": "bold", "fontSize": "12px", "flex": "1",
+                }),
+                html.Span("Add to:",
+                          style={"fontSize": "11px", "color": "#6c757d",
+                                 "flexShrink": "0"}),
+                dcc.Dropdown(
+                    id="panel-target-dd",
+                    options=[],
+                    value=None,
+                    placeholder="panel…",
+                    clearable=False,
+                    style={"minWidth": "90px", "fontSize": "11px"},
+                ),
+                html.Button(
+                    "+", id="assign-sigs-btn", n_clicks=0,
+                    title="Add selected signals to panel",
+                    style={
+                        "fontSize": "12px", "padding": "1px 7px",
+                        "background": "#2196F3", "color": "white",
+                        "border": "none", "borderRadius": "3px",
+                        "cursor": "pointer", "flexShrink": "0",
+                        "fontWeight": "bold",
+                    },
+                ),
+            ], style={
+                "display": "flex", "alignItems": "center", "gap": "5px",
+                "marginBottom": "4px", "flexShrink": "0",
+            }),
+            dag.AgGrid(  # type: ignore[union-attr]
+                id="signal-library",
+                columnDefs=[
+                    {
+                        "field": "color", "headerName": "", "width": 18,
+                        "cellStyle": {"function": "{'background': params.data.color}"},
+                        "suppressHeaderMenuButton": True,
+                        "suppressMovable": True,
+                    },
+                    {
+                        "field": "label", "headerName": "Signal",
+                        "flex": 2, "filter": True, "rowDrag": True,
+                        "cellStyle": {"function":
+                            "params.data._selected "
+                            "? {'background':'#d4e6f1','fontWeight':'bold'} "
+                            ": null"},
+                    },
+                    {"field": "panels", "headerName": "Panels", "flex": 2},
+                    {"field": "type", "headerName": "T", "width": 34},
+                ],
+                rowData=[_make_library_row(s, initial_layout_store)
+                         for s in all_signals_ordered],
+                defaultColDef={"resizable": True, "sortable": True},
+                dashGridOptions={
+                    "rowHeight": 26,
+                    "headerHeight": 26,
+                    "getRowId": {"function": "params.data.name"},
+                },
+                eventListeners={"rowDragEnd": True, "rowClicked": True},  # type: ignore[arg-type]
+                style={"flex": "1", "minHeight": "0"},
+            ) if _AGGRID else html.Div(
+                "Install dash-ag-grid to enable the signal library.",
+                style={"padding": "8px", "color": "#6c757d", "fontSize": "11px",
+                       "flex": "1"},
+            ),
+        ], id="sidebar-body", style={**sidebar_style,
+                                      "display": "flex", "flexDirection": "column"}),
+
+        # ── Resize handle ─────────────────────────────────────────────────────
+        html.Div(id="sidebar-resizer", style={
+            "width": "6px", "minWidth": "6px", "flexShrink": "0",
+            "cursor": "ew-resize",
+            "background": "transparent",
+            "position": "sticky", "top": "0", "height": "100vh",
+            "zIndex": "150",
+        }),
+
+        # ── CENTRE: main figure ───────────────────────────────────────────────
         dcc.Graph(
             id="main-graph", figure=initial_fig,
             style={"flex": "2", "minWidth": "0"},
@@ -622,8 +830,72 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
                 '}',
                 '#main-graph .modebar { flex-direction: column !important; }',
                 '#main-graph .modebar-group { margin: 0 !important; }',
+                '#sidebar-resizer:hover,#sidebar-resizer.resizing {',
+                '  background: rgba(33,150,243,0.3) !important; }',
+                '[data-layout-drop].ag-drag-active {',
+                '  border-color: #2196F3 !important;',
+                '  background: #e3f2fd !important; }',
             ].join(' ');
             document.head.appendChild(s);
+
+            /* ── AG Grid row drag → panel zone hover tracking ── */
+            window._agDragOverPanel = null;
+            window._lastMX = 0;
+            window._lastMY = 0;
+            document.addEventListener('mousemove', function(e) {
+                window._lastMX = e.clientX;
+                window._lastMY = e.clientY;
+                // Clean up highlight when not dragging
+                if (!document.querySelector('.ag-dnd-ghost')) {
+                    if (window._agDragOverPanel !== null) {
+                        document.querySelectorAll('[data-layout-drop]')
+                            .forEach(function(z) { z.classList.remove('ag-drag-active'); });
+                        window._agDragOverPanel = null;
+                    }
+                    return;
+                }
+                // Use elementsFromPoint so we see through the ghost to the zone beneath
+                var els = document.elementsFromPoint(e.clientX, e.clientY) || [];
+                var zone = null;
+                for (var _j = 0; _j < els.length; _j++) {
+                    if (els[_j].dataset && els[_j].dataset.layoutDrop !== undefined) {
+                        zone = els[_j]; break;
+                    }
+                }
+                document.querySelectorAll('[data-layout-drop]')
+                    .forEach(function(z) { z.classList.remove('ag-drag-active'); });
+                if (zone) {
+                    zone.classList.add('ag-drag-active');
+                    window._agDragOverPanel = zone.dataset.layoutDrop;
+                } else {
+                    window._agDragOverPanel = null;
+                }
+            });
+
+            /* ── Sidebar drag-resize ── */
+            var startX, startW;
+            document.addEventListener('mousedown', function(e) {
+                if (e.target.id !== 'sidebar-resizer') return;
+                e.preventDefault();
+                var sb = document.getElementById('sidebar-body');
+                if (!sb || sb.style.display === 'none') return;
+                startX = e.clientX;
+                startW = sb.getBoundingClientRect().width;
+                e.target.classList.add('resizing');
+                function onMove(ev) {
+                    var w = Math.min(Math.max(startW + (ev.clientX - startX), 120), 700);
+                    sb.style.width    = w + 'px';
+                    sb.style.minWidth = w + 'px';
+                }
+                function onUp() {
+                    e.target.classList.remove('resizing');
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup',   onUp);
+                }
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup',   onUp);
+            });
+
             return '';
         }
         """,
@@ -631,9 +903,127 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         Input("_css-dummy", "id"),
     )
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Clientside: collapse/expand signal visibility list
-    # ══════════════════════════════════════════════════════════════════════════
+    # Sidebar collapse/expand
+    app.clientside_callback(
+        """
+        function(n) {
+            var collapsed = n % 2 === 1;
+            return [
+                collapsed ? {display: 'none'} : {
+                    width: '260px', minWidth: '260px',
+                    padding: '16px', boxSizing: 'border-box',
+                    background: '#f8f9fa', borderRight: '1px solid #dee2e6',
+                    fontFamily: 'Arial, sans-serif', position: 'sticky',
+                    top: '0', height: '100vh', overflowY: 'auto', zIndex: '100',
+                    display: 'flex', flexDirection: 'column',
+                },
+                collapsed ? '▶' : '◀',
+            ];
+        }
+        """,
+        Output("sidebar-body",   "style"),
+        Output("sidebar-toggle", "children"),
+        Input("sidebar-toggle",  "n_clicks"),
+    )
+
+    # AG Grid row drag → panel drop zone → layout-store
+    app.clientside_callback(
+        """
+        function(evData, layout) {
+            console.log('[plotsigs drag] evData type:', evData && evData.type,
+                        'hasNodes:', !!(evData && (evData.nodes || evData.node)));
+            if (!evData || evData.type !== 'rowDragEnd')
+                return window.dash_clientside.no_update;
+
+            var nodes = evData.nodes || (evData.node ? [evData.node] : []);
+            var nd = nodes.length ? nodes[0] : null;
+            var sigName = nd && ((nd.data && nd.data.name) || nd.name);
+            console.log('[plotsigs drag] sigName:', sigName,
+                        'lastPos:', window._lastMX, window._lastMY);
+            if (!sigName) return window.dash_clientside.no_update;
+
+            var mx = window._lastMX || 0, my = window._lastMY || 0;
+            var toPanel = null;
+
+            if (mx || my) {
+                var els = document.elementsFromPoint(mx, my) || [];
+
+                /* ── Try 1: sidebar panel zone (data-layout-drop attribute) ── */
+                for (var i = 0; i < els.length; i++) {
+                    if (els[i].dataset && els[i].dataset.layoutDrop !== undefined) {
+                        toPanel = els[i].dataset.layoutDrop;
+                        break;
+                    }
+                }
+
+                /* ── Try 2: Plotly chart subplot (.subplot SVG group ancestor) ── */
+                if (!toPanel) {
+                    for (var j = 0; j < els.length; j++) {
+                        var spEl = els[j].closest && els[j].closest('.subplot');
+                        if (spEl) {
+                            /* class is e.g. "subplot xy", "subplot xy2", "subplot xy3" */
+                            var spCls = Array.from(spEl.classList)
+                                            .find(function(c) { return c !== 'subplot'; });
+                            if (spCls) {
+                                var ym = spCls.match(/y(\\d*)$/);
+                                var gIdx = ym ? (ym[1] ? parseInt(ym[1]) - 1 : 0) : 0;
+                                var actPanels = (layout || []).filter(function(p) {
+                                    return (p.signals || []).length > 0;
+                                });
+                                if (gIdx >= 0 && gIdx < actPanels.length)
+                                    toPanel = actPanels[gIdx].ylabel;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!toPanel) toPanel = window._agDragOverPanel;
+            window._agDragOverPanel = null;
+            document.querySelectorAll('[data-layout-drop]')
+                .forEach(function(z) { z.classList.remove('ag-drag-active'); });
+            console.log('[plotsigs drag] toPanel:', toPanel);
+            if (!toPanel) return window.dash_clientside.no_update;
+
+            var newLayout = (layout || []).map(function(p) {
+                return Object.assign({}, p, {signals: p.signals.slice()});
+            });
+            var idx = newLayout.findIndex(function(p) { return p.ylabel === toPanel; });
+            if (idx < 0) return window.dash_clientside.no_update;
+            if (newLayout[idx].signals.indexOf(sigName) < 0) {
+                newLayout[idx].signals = newLayout[idx].signals.concat([sigName]);
+            }
+            return newLayout;
+        }
+        """,
+        Output("layout-store", "data", allow_duplicate=True),
+        Input("signal-library", "eventData"),
+        State("layout-store", "data"),
+        prevent_initial_call=True,
+    )
+
+    # rowClicked → ag-sel-store: toggle signal name in selection list
+    app.clientside_callback(
+        """
+        function(evData, current) {
+            if (!evData || evData.type !== 'rowClicked')
+                return window.dash_clientside.no_update;
+            var name = evData.data && evData.data.name;
+            if (!name) return window.dash_clientside.no_update;
+            var sel = Array.isArray(current) ? current.slice() : [];
+            var idx = sel.indexOf(name);
+            if (idx >= 0) sel.splice(idx, 1); else sel.push(name);
+            console.log('[plotsigs sel] toggle', name, '→', sel);
+            return sel;
+        }
+        """,
+        Output("ag-sel-store", "data"),
+        Input("signal-library", "eventData"),
+        State("ag-sel-store", "data"),
+        prevent_initial_call=True,
+    )
+
     app.clientside_callback(
         """
         function(n) {
@@ -641,9 +1031,9 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
             return [collapsed ? {display: 'none'} : {display: 'block'}, collapsed ? '▸' : '▾'];
         }
         """,
-        Output("signals-list",  "style"),
-        Output("signals-arrow", "children"),
-        Input("signals-toggle", "n_clicks"),
+        Output("panels-list",  "style"),
+        Output("panels-arrow", "children"),
+        Input("panels-toggle", "n_clicks"),
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -707,10 +1097,248 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         return p
 
     # ══════════════════════════════════════════════════════════════════════════
+    # ROAD-13/14: render panel chips from layout-store
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("panels-list", "children"),
+        Input("layout-store", "data"),
+    )
+    def _render_panels_editor(layout):
+        if not layout:
+            return [html.Span("No panels", style={"color": "#aaa", "fontSize": "11px"})]
+
+        children = []
+        for i, panel in enumerate(layout):
+            mode   = panel.get("mode", "analog")
+            ylabel = panel.get("ylabel", "")
+            sigs   = panel.get("signals", [])
+
+            chips = []
+            for sig_name in sigs:
+                sig_obj = d._signal_map.get(sig_name)
+                label   = (sig_obj.label or sig_obj.name) if sig_obj else sig_name
+                color   = sig_obj.color if sig_obj else "#666"
+                chips.append(html.Span(
+                    [
+                        html.Span(label, style={"verticalAlign": "middle"}),
+                        html.Button(
+                            "−",
+                            id={"type": "sig-rem", "index": f"{i}:{sig_name}"},
+                            n_clicks=0,
+                            title=f"Remove {sig_name} from this panel",
+                            style={
+                                "marginLeft": "3px", "background": "rgba(0,0,0,0.25)",
+                                "border": "none", "color": "white",
+                                "cursor": "pointer", "fontSize": "10px",
+                                "borderRadius": "2px", "padding": "0 3px",
+                                "lineHeight": "1.2", "verticalAlign": "middle",
+                            },
+                        ),
+                    ],
+                    title=sig_name,
+                    style={
+                        "display": "inline-flex", "alignItems": "center",
+                        "background": color, "color": "white",
+                        "borderRadius": "3px", "padding": "1px 4px",
+                        "margin": "2px 1px", "fontSize": "10px",
+                    },
+                ))
+
+            children.append(html.Div([
+                html.Div([
+                    html.Span(
+                        "A" if mode == "analog" else "D",
+                        title=f"{mode} panel",
+                        style={
+                            "background": "#2196F3" if mode == "analog" else "#4CAF50",
+                            "color": "white", "borderRadius": "3px",
+                            "padding": "1px 5px", "fontSize": "10px",
+                            "fontWeight": "bold", "flexShrink": "0",
+                        },
+                    ),
+                    dcc.Input(
+                        id={"type": "panel-ylabel", "index": i},
+                        value=ylabel,
+                        debounce=True,
+                        placeholder="Y-axis label",
+                        style={
+                            "width": "90px", "fontSize": "10px",
+                            "padding": "1px 3px",
+                            "border": "1px solid #ced4da", "borderRadius": "3px",
+                        },
+                    ),
+                    html.Button(
+                        "×",
+                        id={"type": "panel-remove", "index": i},
+                        n_clicks=0,
+                        title="Remove panel",
+                        style={
+                            "marginLeft": "auto", "background": "none",
+                            "border": "none", "color": "#aaa",
+                            "cursor": "pointer", "fontSize": "14px",
+                            "padding": "0 2px", "lineHeight": "1",
+                        },
+                    ),
+                ], style={"display": "flex", "alignItems": "center", "gap": "4px"}),
+                html.Div(
+                    chips if chips else [
+                        html.Span("drag signal here or select + Add",
+                                  style={"fontSize": "9px", "color": "#aaa"})
+                    ],
+                    **{"data-layout-drop": ylabel},
+                    style={
+                        "minHeight": "28px", "border": "1px dashed #ced4da",
+                        "borderRadius": "3px", "padding": "3px",
+                        "marginTop": "3px", "background": "#fafafa",
+                        "flexWrap": "wrap", "display": "flex", "alignItems": "center",
+                        "transition": "border-color 0.1s, background 0.1s",
+                    },
+                ),
+            ], style={"marginBottom": "6px"}))
+
+        return children
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROAD-13/14: update layout-store (add panel, remove panel, ylabel edit)
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("layout-store", "data"),
+        Input({"type": "panel-remove", "index": ALL}, "n_clicks"),
+        Input("add-analog-btn",                       "n_clicks"),
+        Input("add-digital-btn",                      "n_clicks"),
+        Input({"type": "panel-ylabel", "index": ALL}, "value"),
+        State("layout-store",                         "data"),
+        prevent_initial_call=True,
+    )
+    def _update_layout_store(_removes, _add_a, _add_d, _ylabels, layout):
+        layout = [dict(p) for p in (layout or [])]
+        triggered = ctx.triggered_id
+
+        if isinstance(triggered, dict) and triggered.get("type") == "panel-remove":
+            # Guard: newly-mounted buttons fire with n_clicks=0 — not a real click
+            if ctx.triggered and ctx.triggered[0].get("value", 0) > 0:
+                idx = int(triggered["index"])
+                if 0 <= idx < len(layout):
+                    layout.pop(idx)
+
+        elif triggered == "add-analog-btn":
+            layout.append({"ylabel": "New Panel", "mode": "analog", "signals": []})
+
+        elif triggered == "add-digital-btn":
+            layout.append({"ylabel": "New Panel", "mode": "digital", "signals": []})
+
+        elif isinstance(triggered, dict) and triggered.get("type") == "panel-ylabel":
+            idx = int(triggered["index"])
+            if ctx.triggered and 0 <= idx < len(layout):
+                new_val = ctx.triggered[0].get("value")
+                if new_val is not None:
+                    layout[idx] = {**layout[idx], "ylabel": new_val}
+
+        return layout
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROAD-13/14: assign selected grid rows to a panel
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("layout-store", "data", allow_duplicate=True),
+        Input("assign-sigs-btn",    "n_clicks"),
+        State("ag-sel-store",       "data"),
+        State("panel-target-dd",    "value"),
+        State("layout-store",       "data"),
+        prevent_initial_call=True,
+    )
+    def _assign_signals_to_panel(_, selected_names, target_ylabel, layout):
+        _log.info("[assign] n_clicks=%s selected=%r target=%r", _, selected_names, target_ylabel)
+        if not selected_names or not target_ylabel:
+            raise dash.exceptions.PreventUpdate
+        layout = [dict(p) for p in (layout or [])]
+        target_idx = next(
+            (i for i, p in enumerate(layout) if p["ylabel"] == target_ylabel), None
+        )
+        if target_idx is None:
+            raise dash.exceptions.PreventUpdate
+        for sig_name in selected_names:
+            if sig_name and sig_name not in layout[target_idx]["signals"]:
+                layout[target_idx] = {
+                    **layout[target_idx],
+                    "signals": layout[target_idx]["signals"] + [sig_name],
+                }
+        return layout
+
+    @app.callback(
+        Output("ag-sel-store", "data", allow_duplicate=True),
+        Input("assign-sigs-btn", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _clear_selection_after_assign(_):
+        return []
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROAD-13/14: remove a signal from a panel via its [−] chip button
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("layout-store", "data", allow_duplicate=True),
+        Input({"type": "sig-rem", "index": ALL}, "n_clicks"),
+        State("layout-store", "data"),
+        prevent_initial_call=True,
+    )
+    def _remove_signal_from_panel(_clicks, layout):
+        triggered = ctx.triggered_id
+        if not isinstance(triggered, dict) or triggered.get("type") != "sig-rem":
+            raise dash.exceptions.PreventUpdate
+        # Guard: newly-mounted buttons fire with n_clicks=0 — not a real click
+        if not ctx.triggered or (ctx.triggered[0].get("value") or 0) == 0:
+            raise dash.exceptions.PreventUpdate
+        index_str = triggered["index"]            # e.g. "2:SetSpeed"
+        panel_idx_str, sig_name = index_str.split(":", 1)
+        panel_idx = int(panel_idx_str)
+        layout = [dict(p) for p in (layout or [])]
+        if 0 <= panel_idx < len(layout):
+            layout[panel_idx] = {
+                **layout[panel_idx],
+                "signals": [s for s in layout[panel_idx]["signals"] if s != sig_name],
+            }
+        return layout
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROAD-13/14: update signal library grid rows when layout changes
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("signal-library", "rowData"),
+        Input("layout-store", "data"),
+        Input("ag-sel-store", "data"),
+    )
+    def _update_library_rows(layout_data, selected_names):
+        sel = set(selected_names or [])
+        rows = [_make_library_row(s, layout_data) for s in all_signals_ordered]
+        for r in rows:
+            r["_selected"] = r["name"] in sel
+        return rows
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROAD-13/14: keep panel-target dropdown in sync with layout
+    # ══════════════════════════════════════════════════════════════════════════
+    @app.callback(
+        Output("panel-target-dd", "options"),
+        Output("panel-target-dd", "value"),
+        Input("layout-store", "data"),
+        State("panel-target-dd", "value"),
+    )
+    def _update_panel_target_options(layout_data, current_value):
+        panels = layout_data or []
+        options = [{"label": p["ylabel"], "value": p["ylabel"]} for p in panels]
+        valid_values = {p["ylabel"] for p in panels}
+        new_value = current_value if current_value in valid_values else (
+            panels[0]["ylabel"] if panels else None
+        )
+        return options, new_value
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Callback 2: update MAIN graph (tool + signals + window + annotations)
     # ══════════════════════════════════════════════════════════════════════════
     @app.callback(
-        Output("main-graph", "figure"),
+        Output("main-graph",   "figure"),
+        Output("legend-store", "data", allow_duplicate=True),
         Input("tool-select",         "value"),
         Input("sig-a",               "value"),
         Input("sig-b",               "value"),
@@ -719,18 +1347,26 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         Input("smooth-sig",          "value"),
         Input("smooth-window",       "value"),
         Input("annotations-store",   "data"),
-        State("signal-visibility",   "value"),
+        Input("cursor-store",        "data"),
+        Input("layout-store",        "data"),
         State("ann-type",            "value"),
         prevent_initial_call=True,
     )
     def _update_main(tool, sig_a, sig_b, deriv_sig, deriv_win,
-                     smooth_sig, smooth_win, stored_anns, visible_vals, ann_type_val):
-        visible_idxs = {int(v) for v in (visible_vals or [])}
+                     smooth_sig, smooth_win, stored_anns, cursor_data,
+                     layout_data, ann_type_val):
+        if ctx.triggered_id == "layout-store":
+            _log.info("[update_main] layout-store → %d panels: %s",
+                      len(layout_data or []),
+                      [(p["ylabel"], len(p.get("signals", [])))
+                       for p in (layout_data or [])])
+        visible_idxs = None
         fig = _build_main_figure(
             d,
             tool=tool,
             ann_type=ann_type_val,
             use_resampler=use_resampler,
+            cursor_store=cursor_data,
             sig_a_name=sig_a,
             sig_b_name=sig_b,
             deriv_sig_name=deriv_sig,
@@ -739,10 +1375,23 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
             smooth_window=smooth_win or 11,
             stored_annotations=stored_anns,
             visible_idxs=visible_idxs,
+            layout_store=layout_data,
         )
         if use_resampler:
             _fr_ref[0] = fig
-        return fig
+
+        if ctx.triggered_id != "layout-store":
+            return fig, no_update
+
+        # Rebuild legend entries from the new figure (customdata-based)
+        new_legend = _legend_from_fig(fig, d._signal_map)
+        if not new_legend and layout_data:
+            # Resampler omits customdata — build a cheap non-resampler figure
+            fig_for_legend = _build_figure_from_layout(
+                d, layout_data, use_gl=False, use_resampler=False
+            )
+            new_legend = _legend_from_fig(fig_for_legend, d._signal_map)
+        return fig, new_legend
 
     # ══════════════════════════════════════════════════════════════════════════
     # Callback 3: update ANALYSIS pane (right-side graph)
@@ -809,27 +1458,6 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         return go.Figure(), hide
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Callback 4: signal visibility toggle (Patch — no full rebuild needed)
-    # ══════════════════════════════════════════════════════════════════════════
-    app.clientside_callback(
-        """
-        function(checked_vals, figure, legend) {
-            if (!figure || !legend) return window.dash_clientside.no_update;
-            var p = JSON.parse(JSON.stringify(figure));
-            legend.forEach(function(e) {
-                p.data[e.idx].visible = checked_vals.indexOf(String(e.idx)) !== -1;
-            });
-            return p;
-        }
-        """,
-        Output("main-graph", "figure", allow_duplicate=True),
-        Input("signal-visibility", "value"),
-        State("main-graph", "figure"),
-        State("legend-store", "data"),
-        prevent_initial_call=True,
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
     # Callback 5: add annotation / clear all → update store only
     # (main graph is rebuilt by _update_main triggered by store change)
     # ══════════════════════════════════════════════════════════════════════════
@@ -890,9 +1518,10 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         State("delta-auto",     "value"),
         State("cursor-signal",  "value"),
         State("cursor-store",   "data"),
+        State("layout-store",   "data"),
         prevent_initial_call=True,
     )
-    def _set_cursor(click_data, _rst, tool, auto_mode, cursor_sig, store):
+    def _set_cursor(click_data, _rst, tool, auto_mode, cursor_sig, store, layout_data):
         if ctx.triggered_id == "cursor-reset":
             return {"c1": None, "c2": None}, no_update
         if tool != "delta":
@@ -905,9 +1534,12 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
         _log.debug("[cursor] triggered=%s x=%.4f auto=%s",
                    ctx.triggered_id, x_clicked, auto_mode)
 
+        # Use current layout groups so group_idx from customdata stays in sync
+        curr_active = _groups_from_layout(layout_data, d._signal_map) if layout_data else active
+
         use_auto = "auto" in (auto_mode or [])
         if use_auto:
-            sig_obj, y_val, _ = _find_nearest_signal(pt, t, active, trace_meta)
+            sig_obj, y_val, _ = _find_nearest_signal(pt, t, curr_active, trace_meta)
             if sig_obj is None:
                 raise dash.exceptions.PreventUpdate
             sig_name = sig_obj.label or sig_obj.name
@@ -916,7 +1548,7 @@ def run_dash(d: "Diagram", port: int = 8050, debug: bool = False) -> None:
             if not sig_name:
                 raise dash.exceptions.PreventUpdate
             sig_obj = None
-            for grp in active:
+            for grp in curr_active:
                 for s in grp.signals:
                     if (s.label or s.name) == sig_name:
                         sig_obj = s

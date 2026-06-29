@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(C:\\Users\\ivanm\\miniforge3\\envs\\control\\python.exe *)"
+      "PowerShell(C:\\Users\\ivanm\\miniforge3\\envs\\control\\python.exe *)",
+      "WebFetch(domain:dash.plotly.com)",
+      "PowerShell(tail -20)",
+      "PowerShell(tail -10)",
+      "PowerShell(tail -5)",
+      "Bash(python -c \"import dash_ag_grid; import os; print\\(os.path.dirname\\(dash_ag_grid.__file__\\)\\)\")",
+      "Bash(C:/Users/ivanm/miniforge3/envs/control/python.exe -c \"import dash_ag_grid, os; print\\(os.path.dirname\\(dash_ag_grid.__file__\\)\\)\")"
     ]
   }
 }
